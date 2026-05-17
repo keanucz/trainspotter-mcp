@@ -1,0 +1,46 @@
+{
+  "name": "trainspotter-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for UK train tracking — real-time departures, arrivals, delays, and historical performance via Darwin LDBWS and HSP APIs",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "trainspotter-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "trains",
+    "uk-rail",
+    "darwin",
+    "ldbws",
+    "national-rail",
+    "real-time",
+    "departures",
+    "delays"
+  ],
+  "author": "Keanu Czirjak",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "fast-xml-parser": "^5.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.8.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0",
+    "vitest": "^3.2.0"
+  }
+}
