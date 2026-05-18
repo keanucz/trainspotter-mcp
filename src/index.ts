@@ -10,8 +10,9 @@ import {
 
 import { createDarwinClient } from './darwin.js';
 import { createHspClient } from './hsp.js';
+import { createFaresClient } from './fares.js';
 import { getStationName, findStation, isValidCrs } from './stations.js';
-import type { StationBoard, ServiceDetails, HspMetrics } from './types.js';
+import type { StationBoard, ServiceDetails, HspMetrics, FaresResponse } from './types.js';
 
 const tools: Tool[] = [
   {
@@ -154,6 +155,53 @@ const tools: Tool[] = [
         },
       },
       required: ['query'],
+    },
+  },
+  {
+    name: 'search_fares',
+    description:
+      'Search for train fares between two UK stations. Returns walk-up fares (anytime, off-peak, super off-peak), restricted availability fares (advance), and pay-as-you-go fares. Prices include adult and child. Supports up to 3 railcards (e.g. YNG=16-25, TSU=Two Together, SRN=Senior, FAM=Family & Friends, DIS=Disabled, NGC=Network). Limited to 100 searches per month on free tier.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        from: {
+          type: 'string',
+          description: 'Origin station CRS code (e.g. MAN, KGX, EDB)',
+        },
+        to: {
+          type: 'string',
+          description: 'Destination station CRS code',
+        },
+        railcards: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Railcard codes to apply (max 3). Common: YNG=16-25, TSU=Two Together, SRN=Senior, FAM=Family & Friends, DIS=Disabled Persons, NGC=Network Railcard, HMF=HM Forces, JCP=Jobcentre Plus',
+        },
+        date: {
+          type: 'string',
+          description: 'Date in YYYYMMDD format. If omitted, returns current fares.',
+        },
+      },
+      required: ['from', 'to'],
+    },
+  },
+  {
+    name: 'list_railcards',
+    description:
+      'List all available railcards and discount codes that can be used with search_fares. Returns code, name, and whether each is available for online purchase.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
+    name: 'list_fare_locations',
+    description:
+      'List all locations that have fares available in the BR Fares database. Useful for finding NLC codes and verifying station names for fare searches.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
     },
   },
 ];
@@ -362,6 +410,80 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     }
 
+    case 'search_fares': {
+      const { from, to, railcards, date } = args as {
+        from: string;
+        to: string;
+        railcards?: string[];
+        date?: string;
+      };
+
+      try {
+        const fares = createFaresClient();
+        const result = await fares.searchFares(
+          from.toUpperCase(),
+          to.toUpperCase(),
+          railcards?.map((r) => r.toUpperCase()),
+          date
+        );
+        return { content: [{ type: 'text', text: formatFares(result) }] };
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        if (msg.includes('BRFARES_API_KEY')) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: 'BR Fares API not configured. Set BRFARES_API_KEY environment variable.',
+              },
+            ],
+            isError: true,
+          };
+        }
+        return {
+          content: [{ type: 'text', text: `Fare search error: ${msg}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'list_railcards': {
+      try {
+        const fares = createFaresClient();
+        const railcards = await fares.listRailcards();
+        const lines = ['Available railcards:', ''];
+        for (const rc of railcards) {
+          lines.push(`  ${rc.code} — ${rc.name}${rc.online_display ? '' : ' (not available online)'}`);
+        }
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      } catch (error) {
+        return {
+          content: [{ type: 'text', text: `Error: ${error instanceof Error ? error.message : error}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'list_fare_locations': {
+      try {
+        const fares = createFaresClient();
+        const locations = await fares.listLocations();
+        const lines = [`${locations.length} fare locations available. Showing first 50:`, ''];
+        for (const loc of locations.slice(0, 50)) {
+          lines.push(`  ${loc.crs || loc.nlc} — ${loc.name}`);
+        }
+        if (locations.length > 50) {
+          lines.push(`  ... and ${locations.length - 50} more`);
+        }
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      } catch (error) {
+        return {
+          content: [{ type: 'text', text: `Error: ${error instanceof Error ? error.message : error}` }],
+          isError: true,
+        };
+      }
+    }
+
     default:
       return {
         content: [{ type: 'text', text: `Unknown tool: ${name}` }],
@@ -490,6 +612,93 @@ function formatHspMetrics(metrics: HspMetrics): string {
         `  ${label}: ${band.numServices} trains (${band.percentageOfServices.toFixed(1)}%)`
       );
     }
+  }
+
+  return lines.join('\n');
+}
+
+function penceToPounds(pence: number): string {
+  return `£${(pence / 100).toFixed(2)}`;
+}
+
+function formatFares(result: FaresResponse): string {
+  const lines = [
+    `Fares: ${result.orig.name} → ${result.dest.name}`,
+    `(${result.orig.crs || result.orig.nlc} → ${result.dest.crs || result.dest.nlc})`,
+  ];
+
+  if (result.railcards.length > 0) {
+    lines.push(`Railcards: ${result.railcards.map((r) => r.name).join(', ')}`);
+  }
+
+  lines.push('');
+
+  if (result.walkup.length > 0) {
+    lines.push(`Walk-up fares (${result.walkup.length}):`);
+    for (const fare of result.walkup) {
+      const ticket = fare.ticket;
+      const cls = ticket.tclass === 1 ? '1st' : 'Std';
+      const type = fare.type === 'SINGLE' ? 'SGL' : 'RTN';
+      const route = fare.route?.name && !fare.route.name.includes('any permitted')
+        ? ` [${fare.route.name}]`
+        : '';
+
+      for (const dg of fare.discount_groups) {
+        const adult = dg.adult?.price != null ? penceToPounds(dg.adult.price) : '—';
+        const child = dg.child?.price != null ? penceToPounds(dg.child.price) : '—';
+        const rcLabel = dg.railcard?.name && dg.railcard.name !== 'PUBLIC'
+          ? ` (${dg.railcard.name})`
+          : '';
+        lines.push(
+          `  ${adult} / ${child} child | ${ticket.rspname || ticket.name} | ${cls} ${type}${rcLabel}${route}`
+        );
+      }
+    }
+    lines.push('');
+  }
+
+  if (result.restricted.length > 0) {
+    let restrictedCount = 0;
+    for (const group of result.restricted) {
+      restrictedCount += group.fares?.length ?? 0;
+    }
+    lines.push(`Advance/restricted fares (${restrictedCount}):`);
+    for (const rg of result.restricted) {
+      const type = rg.type === 'SINGLE' ? 'SGL' : 'RTN';
+      const cls = rg.tclass === 1 ? '1st' : 'Std';
+      const restriction = rg.restriction?.out && rg.restriction.out !== 'Unrestricted'
+        ? ` [${rg.restriction.out}]`
+        : '';
+
+      for (const fare of rg.fares ?? []) {
+        for (const dg of fare.discount_groups) {
+          const adult = dg.adult?.price != null ? penceToPounds(dg.adult.price) : '—';
+          const child = dg.child?.price != null ? penceToPounds(dg.child.price) : '—';
+          const rcLabel = dg.railcard?.name && dg.railcard.name !== 'PUBLIC'
+            ? ` (${dg.railcard.name})`
+            : '';
+          lines.push(
+            `  ${adult} / ${child} child | ${fare.ticket.rspname || fare.ticket.name} | ${cls} ${type}${rcLabel}${restriction}`
+          );
+        }
+      }
+    }
+    lines.push('');
+  }
+
+  if (result.payg.length > 0) {
+    lines.push(`Pay-as-you-go fares (${result.payg.length}):`);
+    for (const fare of result.payg) {
+      for (const dg of fare.discount_groups) {
+        const adult = dg.adult?.price != null ? penceToPounds(dg.adult.price) : '—';
+        lines.push(`  ${adult} | ${fare.ticket.rspname || fare.ticket.name}`);
+      }
+    }
+    lines.push('');
+  }
+
+  if (result.walkup.length === 0 && result.restricted.length === 0 && result.payg.length === 0) {
+    lines.push('No fares found for this route.');
   }
 
   return lines.join('\n');

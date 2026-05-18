@@ -108,3 +108,141 @@ export interface HspServiceMetricsResponse {
     }>;
   }>;
 }
+
+// ─── BR Fares Easy Fares API Types ──────────────────────────────
+
+export interface FareLocation {
+  nlc?: string;
+  crs?: string;
+  code?: string;
+  name?: string;
+  ticketname?: string;
+  longname?: string;
+  rspname?: string;
+  ojpname?: string;
+}
+
+export interface FareRoute {
+  code?: string;
+  name?: string;
+  ticketname?: string;
+  longname?: string;
+  rspname?: string;
+  ojpname?: string;
+}
+
+export interface FareTicket {
+  code: string;
+  tclass: number;
+  print_format?: string;
+  name: string;
+  ticketname?: string;
+  longname?: string;
+  rspname?: string;
+  ojpname?: string;
+  rspnotes?: string;
+  ojpnotes?: string;
+  kb_cat?: string;
+  capri_code?: string;
+  idms_enabled?: boolean;
+}
+
+export interface FareRestriction {
+  code?: string;
+  desc?: string;
+  out?: string;
+  rtn?: string;
+  details?: Array<{ header?: string; text?: string }>;
+}
+
+export interface FareSetter {
+  code?: string;
+  name?: string;
+}
+
+export interface FarePrice {
+  status_code?: string;
+  status_desc?: string;
+  price?: number;
+}
+
+export interface DiscountGroup {
+  railcard: { code: string; name: string };
+  adult?: FarePrice;
+  child?: FarePrice;
+}
+
+export interface FareInfo {
+  type: string;
+  orig: FareLocation;
+  dest: FareLocation;
+  route: FareRoute;
+  cross_london: boolean;
+  ticket: FareTicket;
+  restriction: FareRestriction;
+  fare_setter: FareSetter;
+  discount_groups: DiscountGroup[];
+  fulfilment?: string[];
+}
+
+export interface RestrictedFareGroup {
+  type: string;
+  orig: FareLocation;
+  dest: FareLocation;
+  route: FareRoute;
+  cross_london: boolean;
+  restriction: FareRestriction;
+  fare_setter: FareSetter;
+  tclass?: number;
+  min_price?: number;
+  max_price?: number;
+  fares?: Array<{
+    ticket: FareTicket;
+    discount_groups: DiscountGroup[];
+  }>;
+  fulfilment?: string[];
+  reservation_requirements?: string;
+  half_return?: boolean;
+}
+
+export interface UnavailableFare extends FareInfo {
+  reservation_requirements?: string;
+  half_return?: boolean;
+}
+
+export interface FaresResponse {
+  orig: FareLocation;
+  dest: FareLocation;
+  railcards: Array<{ code: string; name: string }>;
+  walkup: FareInfo[];
+  payg: FareInfo[];
+  restricted: RestrictedFareGroup[];
+  unavailable: UnavailableFare[];
+  valid_date?: number;
+  valid_until_date?: number;
+  future_available?: boolean;
+}
+
+export interface RailcardInfo {
+  code: string;
+  name: string;
+  online_display?: boolean;
+  unattended_retail?: boolean;
+  ticketname?: string;
+  rspname?: string;
+  ojpname?: string;
+  group_restriction?: {
+    desc?: string;
+    min_pass?: number;
+    max_pass?: number;
+    min_adult?: number;
+    max_adult?: number;
+    min_child?: number;
+    max_child?: number;
+  };
+}
+
+export interface FareLocationInfo extends FareLocation {
+  orig?: boolean;
+  dest?: boolean;
+}
