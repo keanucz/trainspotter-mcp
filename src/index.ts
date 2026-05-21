@@ -19,7 +19,7 @@ const tools: Tool[] = [
   {
     name: 'get_departures',
     description:
-      'Get live departure board for a UK station. Returns scheduled/estimated times, platforms, operators, delays, and cancellations. Use 3-letter CRS codes (e.g. KGX=Kings Cross, MAN=Manchester Piccadilly, EDB=Edinburgh). Use get_station_info to look up codes.',
+      'Get LIVE departure board (next 1-2 hours only, NOT future dates) for a UK station. Returns scheduled/estimated times, platforms, operators, delays, and cancellations. Use 3-letter CRS codes (e.g. KGX=Kings Cross, MAN=Manchester Piccadilly, EDB=Edinburgh). Use get_station_info to look up codes.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -82,7 +82,7 @@ const tools: Tool[] = [
   {
     name: 'search_trains',
     description:
-      'Find trains between two stations. Returns departure board filtered by destination, showing available services with times, platforms, and delay status.',
+      'Show LIVE trains departing RIGHT NOW (next 1-2 hours only) between two stations. CANNOT look up future dates or timetables. For ticket prices on any date, use search_fares instead. Returns real-time departure board with platforms, delays, and cancellations.',
     inputSchema: {
       type: 'object',
       properties: {
