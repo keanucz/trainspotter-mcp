@@ -11,6 +11,7 @@ import {
 import { createDarwinClient } from './darwin.js';
 import { createHspClient } from './hsp.js';
 import { createFaresClient } from './fares.js';
+import { recordFaresCall, getUsageStatus, canMakeFaresCall } from './usage.js';
 import { getStationName, findStation, isValidCrs } from './stations.js';
 import type { StationBoard, ServiceDetails, HspMetrics, FaresResponse } from './types.js';
 
@@ -199,6 +200,15 @@ const tools: Tool[] = [
     name: 'list_fare_locations',
     description:
       'List all locations that have fares available in the BR Fares database. Useful for finding NLC codes and verifying station names for fare searches.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
+    name: 'get_fare_usage',
+    description:
+      'Check BR Fares API usage for the current billing period. Shows calls used, remaining, and limit (100/month free tier). Use before searching fares to check budget.',
     inputSchema: {
       type: 'object',
       properties: {},
@@ -418,6 +428,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         date?: string;
       };
 
+      if (!canMakeFaresCall()) {
+        const status = getUsageStatus();
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `BR Fares API monthly limit reached (${status.used}/${status.limit}). Resets next billing period (${status.period}). Cannot search fares until then.`,
+            },
+          ],
+          isError: true,
+        };
+      }
+
       try {
         const fares = createFaresClient();
         const result = await fares.searchFares(
@@ -426,7 +449,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           railcards?.map((r) => r.toUpperCase()),
           date
         );
-        return { content: [{ type: 'text', text: formatFares(result) }] };
+        recordFaresCall();
+        const status = getUsageStatus();
+        let output = formatFares(result);
+        if (status.warning) {
+          output += `\n\n⚠️ ${status.warning}`;
+        } else {
+          output += `\n\n📊 BR Fares API: ${status.used}/${status.limit} calls used this period.`;
+        }
+        return { content: [{ type: 'text', text: output }] };
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         if (msg.includes('BRFARES_API_KEY')) {
@@ -482,6 +513,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           isError: true,
         };
       }
+    }
+
+    case 'get_fare_usage': {
+      const status = getUsageStatus();
+      const lines = [
+        `BR Fares API usage (${status.period}):`,
+        `  Used: ${status.used}/${status.limit}`,
+        `  Remaining: ${status.remaining}`,
+        `  Limit: ${status.limit} calls per 30-day period (free demo tier)`,
+      ];
+      if (status.warning) {
+        lines.push('', `⚠️ ${status.warning}`);
+      }
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
     }
 
     default:
