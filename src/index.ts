@@ -11,6 +11,7 @@ import {
 import { createDarwinClient } from './darwin.js';
 import { createHspClient } from './hsp.js';
 import { createFaresClient } from './fares.js';
+import { createTimetableClient } from './timetable.js';
 import { recordFaresCall, getUsageStatus, canMakeFaresCall } from './usage.js';
 import { getStationName, findStation, isValidCrs } from './stations.js';
 import type { StationBoard, ServiceDetails, HspMetrics, FaresResponse } from './types.js';
@@ -203,6 +204,39 @@ const tools: Tool[] = [
     inputSchema: {
       type: 'object',
       properties: {},
+    },
+  },
+  {
+    name: 'get_timetable',
+    description:
+      'Look up train departures at a specific date and time (today or tomorrow only — Darwin only loads ~24h ahead). Use this to find what trains run at a specific time. For live real-time boards use get_departures instead. Returns scheduled departure times, operators, destinations, and platforms.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        station: {
+          type: 'string',
+          description: 'Departure station CRS code (e.g. MAN, LPY, KGX)',
+        },
+        datetime: {
+          type: 'string',
+          description: 'Date and time in format YYYYMMDDTHHMMSS (e.g. 20260521T080000 for May 21 at 8am). Only today and tomorrow work — further ahead returns empty.',
+        },
+        destination: {
+          type: 'string',
+          description: 'Optional destination CRS code to filter (e.g. SHF, LDS)',
+        },
+        rows: {
+          type: 'number',
+          description: 'Number of services (default 10)',
+          default: 10,
+        },
+        time_window: {
+          type: 'number',
+          description: 'Time window in minutes to look ahead from datetime (default 120, max 120)',
+          default: 120,
+        },
+      },
+      required: ['station', 'datetime'],
     },
   },
   {
@@ -510,6 +544,63 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       } catch (error) {
         return {
           content: [{ type: 'text', text: `Error: ${error instanceof Error ? error.message : error}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'get_timetable': {
+      const { station, datetime, destination, rows, time_window } = args as {
+        station: string;
+        datetime: string;
+        destination?: string;
+        rows?: number;
+        time_window?: number;
+      };
+
+      try {
+        const timetable = createTimetableClient();
+        const board = await timetable.getDepartures(
+          station.toUpperCase(),
+          datetime,
+          destination?.toUpperCase(),
+          rows ?? 10,
+          time_window ?? 120,
+        );
+
+        const lines = [
+          `Timetable: ${board.locationName} (${board.crs})${board.filterLocationName ? ` → ${board.filterLocationName}` : ''}`,
+          `Queried: ${datetime}`,
+          '',
+        ];
+
+        if (board.services.length === 0) {
+          lines.push('No services found. Note: only today and tomorrow are available (Darwin loads ~24h ahead).');
+        } else {
+          for (const svc of board.services) {
+            const status = svc.isCancelled
+              ? 'CANCELLED'
+              : svc.etd && svc.etd !== svc.std
+                ? `exp ${svc.etd}`
+                : 'On time';
+            const plat = svc.platform ? `Plat ${svc.platform}` : '';
+            lines.push(
+              `  ${svc.std} → ${svc.destination} | ${svc.operator} | ${plat} | ${status}`
+            );
+          }
+        }
+
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        if (msg.includes('LDBSVWS_TOKEN')) {
+          return {
+            content: [{ type: 'text', text: 'Staff LDBSVWS not configured. Set LDBSVWS_TOKEN environment variable.' }],
+            isError: true,
+          };
+        }
+        return {
+          content: [{ type: 'text', text: `Timetable error: ${msg}` }],
           isError: true,
         };
       }
