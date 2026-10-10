@@ -38,6 +38,8 @@ Built this because I kept asking "is my train delayed?" and "how much is a ticke
 | `search_fares` | Search fares between two stations |
 | `list_railcards` | List available railcard codes |
 | `list_fare_locations` | List stations with fare data |
+| `search_rtt` | Departures for any date via Realtime Trains (past 14 days to weeks ahead) |
+| `get_rtt_service` | Calling points of one train on one date via Realtime Trains |
 
 ## Setup
 
@@ -58,6 +60,7 @@ You need at least the LDBWS token. The others are optional depending on which to
 | `OPENRAIL_USERNAME` | [Rail Data Marketplace](https://raildata.org.uk) | HSP delay history |
 | `OPENRAIL_PASSWORD` | Same as above | HSP delay history |
 | `BRFARES_API_KEY` | [Rail Data Marketplace](https://raildata.org.uk) -- subscribe to Easy Fares API (Demo) | Fare search |
+| `RTT_API_TOKEN` | [Realtime Trains API portal](https://api-portal.rtt.io) -- free tier, 10 requests/min | `search_rtt`, `get_rtt_service` (any-date timetables) |
 
 ### Claude Code
 

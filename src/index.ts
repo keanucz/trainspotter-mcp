@@ -12,9 +12,16 @@ import { createDarwinClient } from './darwin.js';
 import { createHspClient } from './hsp.js';
 import { createFaresClient } from './fares.js';
 import { createTimetableClient } from './timetable.js';
+import { createRttClient, formatRttDepartures, formatRttService } from './rtt.js';
 import { recordFaresCall, getUsageStatus, canMakeFaresCall } from './usage.js';
 import { getStationName, findStation, isValidCrs } from './stations.js';
 import type { StationBoard, ServiceDetails, HspMetrics, FaresResponse } from './types.js';
+// One client per process so the short-lived Realtime Trains access token is reused between calls.
+let rttClient: ReturnType<typeof createRttClient> | null = null;
+function getRttClient(): ReturnType<typeof createRttClient> {
+  rttClient ??= createRttClient();
+  return rttClient;
+}
 
 const tools: Tool[] = [
   {
@@ -237,6 +244,52 @@ const tools: Tool[] = [
         },
       },
       required: ['station', 'datetime'],
+    },
+  },
+  {
+    name: 'search_rtt',
+    description:
+      'Look up scheduled departures for ANY date (past 14 days to several weeks ahead) via the Realtime Trains API, with live running for today. Use this for future-date planning when get_timetable (today/tomorrow only) is not enough. Returns departure time, final destination and its arrival time, operator, platform and the service identity for get_rtt_service. Free tier: 10 requests/min, 100/hour.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        station: {
+          type: 'string',
+          description: 'Departure station CRS code (e.g. KGX, LPY, EDB)',
+        },
+        destination: {
+          type: 'string',
+          description: 'Optional CRS code — only trains that call there afterwards',
+        },
+        from: {
+          type: 'string',
+          description: 'Start of the window as YYYY-MM-DDTHH:MM:SS local time (default: now)',
+        },
+        to: {
+          type: 'string',
+          description: 'End of the window as YYYY-MM-DDTHH:MM:SS (default: 60 minutes after from; max 23h59m)',
+        },
+      },
+      required: ['station'],
+    },
+  },
+  {
+    name: 'get_rtt_service',
+    description:
+      'Get every calling point (arrival, departure, platform) of one train on one date via the Realtime Trains API. Passing points where the train does not stop are left out. Use the identity and date returned by search_rtt.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        identity: {
+          type: 'string',
+          description: 'Service identity from search_rtt (e.g. G80273)',
+        },
+        date: {
+          type: 'string',
+          description: 'Departure date from origin in YYYY-MM-DD format',
+        },
+      },
+      required: ['identity', 'date'],
     },
   },
   {
@@ -601,6 +654,41 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         return {
           content: [{ type: 'text', text: `Timetable error: ${msg}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'search_rtt': {
+      const { station, destination, from, to } = args as {
+        station: string;
+        destination?: string;
+        from?: string;
+        to?: string;
+      };
+
+      try {
+        const board = await getRttClient().getDepartures({ station, destination, from, to });
+        return { content: [{ type: 'text', text: formatRttDepartures(board) }] };
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        return {
+          content: [{ type: 'text', text: `Realtime Trains lookup failed: ${msg}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'get_rtt_service': {
+      const { identity, date } = args as { identity: string; date: string };
+
+      try {
+        const service = await getRttClient().getService(identity, date);
+        return { content: [{ type: 'text', text: formatRttService(service) }] };
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        return {
+          content: [{ type: 'text', text: `Realtime Trains lookup failed: ${msg}` }],
           isError: true,
         };
       }
