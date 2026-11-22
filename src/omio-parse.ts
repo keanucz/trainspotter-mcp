@@ -143,11 +143,25 @@ const SCHEMA_ERROR_CODES: ReadonlySet<string> = new Set([
   'PERSISTED_QUERY_NOT_FOUND',
   'PERSISTED_QUERY_NOT_SUPPORTED',
 ]);
-// The server uses this code both for variables that no longer fit the input
-// type (a schema change) and for values it rejects. Only the first kind names
-// the variable.
+// The server uses this code both for variables that no longer have the shape
+// the input type wants (a schema change, since this code builds them) and for
+// a value it refuses. Both name the variable; only the first kind uses one of
+// the fixed phrases GraphQL has for a wrong shape: an unknown field, a missing
+// required field, an unknown enum value, or a value of the wrong type.
 const BAD_INPUT_CODE = 'BAD_USER_INPUT';
 const VARIABLE_MISMATCH_PATTERN = /^Variable "\$/;
+const VARIABLE_SHAPE_PATTERN =
+  /is not defined by type|was not provided|does not exist in "[^"]*" enum|cannot represent|to be an object|not to be null|must not be null/;
+
+/**
+ * The part of a variable error that gives the reason. The message first echoes
+ * the rejected value ("... got invalid value { ... } at "path"; <reason>"), and
+ * the echo must not be searched: it is our own data and could contain anything.
+ */
+function variableErrorReason(message: string): string {
+  const separator = message.lastIndexOf('; ');
+  return separator === -1 ? message : message.slice(separator + 2);
+}
 // Fallback for a reply with no error code: the wording GraphQL servers use
 // when a query no longer fits their schema.
 const GRAPHQL_VALIDATION_PATTERN =
@@ -162,20 +176,22 @@ export interface GraphqlFailure {
 
 function describeGraphqlError(raw: unknown): GraphqlFailure {
   const error = raw !== null && typeof raw === 'object' ? (raw as Json) : {};
-  const message = (typeof error['message'] === 'string' ? error['message'] : JSON.stringify(raw)).slice(
-    0,
-    MAX_ERROR_MESSAGE_LENGTH,
-  );
+  // Classify before shortening: the reason can come after a long echo of the
+  // rejected value. Only the reported text is cut.
+  const fullMessage = typeof error['message'] === 'string' ? error['message'] : JSON.stringify(raw);
+  const message = fullMessage.slice(0, MAX_ERROR_MESSAGE_LENGTH);
   const extensions = error['extensions'];
   const code =
     extensions !== null && typeof extensions === 'object' ? (extensions as Json)['code'] : undefined;
 
   if (typeof code !== 'string') {
-    return { message, schemaChange: GRAPHQL_VALIDATION_PATTERN.test(message) };
+    return { message, schemaChange: GRAPHQL_VALIDATION_PATTERN.test(fullMessage) };
   }
-  const schemaChange =
-    SCHEMA_ERROR_CODES.has(code) || (code === BAD_INPUT_CODE && VARIABLE_MISMATCH_PATTERN.test(message));
-  return { message, schemaChange };
+  const wrongShape =
+    code === BAD_INPUT_CODE &&
+    VARIABLE_MISMATCH_PATTERN.test(fullMessage) &&
+    VARIABLE_SHAPE_PATTERN.test(variableErrorReason(fullMessage));
+  return { message, schemaChange: SCHEMA_ERROR_CODES.has(code) || wrongShape };
 }
 
 /**

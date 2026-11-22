@@ -80,6 +80,11 @@ export const OMIO_RAILCARDS: Readonly<Record<string, string>> = {
   JCP: 'Jobcentre Plus Travel Discount Card',
 };
 
+const MAX_POSSESSIVE_TERMS = 2;
+// A word that may be a possessive written without its apostrophe ("Shepherds"),
+// but not one that merely ends in a double s ("Cross").
+const POSSESSIVE_CANDIDATE_PATTERN = /^[a-z]{2,}[^s']s$/i;
+
 export type OmioSearchMode = 'train' | 'coach';
 
 const WIRE_MODE: Readonly<Record<OmioSearchMode, string>> = {
@@ -300,6 +305,24 @@ function comparableName(name: string): string {
 }
 
 /**
+ * Spellings of a search term with an apostrophe put back, for a name typed or
+ * listed without one ("Shepherds Bush" is stored as "Shepherd's Bush", and the
+ * search needs the apostrophe). One word is changed per spelling, and only a
+ * few are offered, because each one costs a request.
+ */
+export function possessiveSearchTerms(term: string): string[] {
+  if (/['’]/.test(term)) return [];
+  const words = term.split(/\s+/);
+  return words
+    .flatMap((word, index) =>
+      POSSESSIVE_CANDIDATE_PATTERN.test(word)
+        ? [[...words.slice(0, index), `${word.slice(0, -1)}'s`, ...words.slice(index + 1)].join(' ')]
+        : [],
+    )
+    .slice(0, MAX_POSSESSIVE_TERMS);
+}
+
+/**
  * How strictly a SearchLocation result must match what was asked for.
  * - `crs`: the input was a known CRS code, `name` is that station's name.
  * - `exact`: the input must be the exact name of a place.
@@ -409,41 +432,65 @@ export class OmioClient {
     return locations;
   }
 
+  /**
+   * Looks the terms up one after another and stops at the first reply that
+   * holds a match for `name`. Also returns every location seen on the way, in
+   * reply order, which is what the caller can offer when nothing matched.
+   */
+  private async lookupFirstMatch(
+    terms: readonly string[],
+    name: string,
+    match: LocationMatch,
+  ): Promise<{ picked: OmioLocation | null; seen: OmioLocation[] }> {
+    let seen: OmioLocation[] = [];
+    for (const term of terms) {
+      const locations = await this.lookupLocations(term);
+      seen = [...seen, ...locations];
+      const picked = pickLocation(locations, name, match);
+      if (picked) return { picked, seen };
+    }
+    return { picked: null, seen };
+  }
+
   private async resolveLocation(input: string): Promise<OmioLocation> {
     const trimmed = input.trim();
     const looksLikeCrs = /^[A-Za-z]{3}$/.test(trimmed);
     const stationName = looksLikeCrs ? getStationName(trimmed) : undefined;
     const name = stationName ?? trimmed;
-    // Three letters that are not a code we know may be a typo or a code missing
-    // from the station table, so only an exact place name is accepted for them.
     const terms = locationSearchTerms(name);
     // A shortened term lists places that merely share a first word, so the
     // first suggestion is no longer a fair reading of what was asked for.
     const shortened = comparableName(terms[0] ?? name) !== comparableName(name);
+    // Three letters that are not a code we know may be a typo or a code missing
+    // from the station table, so only an exact place name is accepted for them.
     const match: LocationMatch = stationName ? 'crs' : looksLikeCrs || shortened ? 'exact' : 'free';
 
-    let locations: OmioLocation[] = [];
-    let picked: OmioLocation | null = null;
-    for (const [index, term] of terms.entries()) {
-      locations = await this.lookupLocations(term);
-      // The first suggestion is only a fallback once every spelling has been tried.
-      const isLastTerm = index === terms.length - 1;
-      picked = pickLocation(locations, name, match === 'free' && !isLastTerm ? 'exact' : match);
-      if (picked) break;
-    }
+    // Every spelling is tried for a proper match first. The first suggestion
+    // is only a fallback for free text, once none of them matched.
+    const strict: LocationMatch = match === 'free' ? 'exact' : match;
+    const asGiven = await this.lookupFirstMatch(terms, name, strict);
+    // A search that knew nothing at all is what a missing apostrophe looks
+    // like. Those spellings are a guess, so only a proper match is taken from them.
+    const possessive =
+      !asGiven.picked && asGiven.seen.length === 0
+        ? await this.lookupFirstMatch(possessiveSearchTerms(terms[0] ?? name), name, strict)
+        : { picked: null, seen: [] };
+    const picked =
+      asGiven.picked ?? possessive.picked ?? (match === 'free' ? (asGiven.seen[0] ?? null) : null);
     if (!picked) {
+      const locations = [...asGiven.seen, ...possessive.seen];
       const detail = stationName
         ? ` (${stationName}): no British station with that name came back.`
         : looksLikeCrs
           ? '. It is not a station code this server knows and no place has exactly that name, so pass the full station name.'
           : '.';
       // Naming what did come back saves the caller a second lookup.
-      const offered = locations
+      const stationNames = locations
         .filter(
           (location) => location.type === 'station' && (match !== 'crs' || location.countryCode === 'GB'),
         )
-        .slice(0, MAX_OFFERED_LOCATIONS)
         .map((location) => location.name.slice(0, MAX_OFFERED_NAME_LENGTH));
+      const offered = [...new Set(stationNames)].slice(0, MAX_OFFERED_LOCATIONS);
       const offer = offered.length > 0 ? ` Uber Travel offers: ${offered.join(', ')}.` : '';
       throw new Error(
         `No Uber Travel location found for "${trimmed}"${detail}${offer} Use omio_locations to see what it knows, then pass that name.`,

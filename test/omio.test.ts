@@ -715,6 +715,88 @@ describe('OmioClient.searchFares', () => {
     expect(result.origin).toMatchObject({ id: '888', name: 'Bishops Stortford' })
   })
 
+  it('tries the possessive spelling when a name without an apostrophe finds nothing', async () => {
+    const found = loadOmioFixture('search-location-station')
+    found.data.SearchLocation.locations[0].name = "Shepherd's Bush"
+    found.data.SearchLocation.locations[0].id = '999'
+    const h = harness({
+      ...standardScript(),
+      SearchLocation: [
+        (variables: any) => (variables.request.name === "Shepherd's Bush" ? found : locationResponder(variables)),
+      ],
+    })
+    const result = await h.client.searchFares({ ...BASE_QUERY, from: 'Shepherds Bush' })
+    const lookups = h.calls.filter((c) => c.operationName === 'SearchLocation').map((c) => c.variables.request.name)
+    expect(lookups).toEqual(['Shepherds Bush', "Shepherd's Bush", 'London Euston'])
+    expect(result.origin).toMatchObject({ id: '999', name: "Shepherd's Bush" })
+  })
+
+  it('does not try possessive spellings when the search already returned places', async () => {
+    const h = harness({ ...standardScript(), SearchLocation: [loadOmioFixture('search-location-city')] })
+    // Nothing is called this, but the search answered, so its first suggestion is used as before.
+    const result = await h.client.searchFares({
+      ...BASE_QUERY,
+      from: 'Liverpools Docks',
+      to: 'Liverpool South Parkway',
+    })
+    const lookups = h.calls.filter((c) => c.operationName === 'SearchLocation').map((c) => c.variables.request.name)
+    expect(lookups).toEqual(['Liverpools Docks', 'Liverpool South Parkway'])
+    expect(result.origin).toMatchObject({ name: 'Liverpool', type: 'location' })
+  })
+
+  it('tries at most two possessive spellings', async () => {
+    const h = harness(standardScript())
+    await expect(h.client.searchFares({ ...BASE_QUERY, from: 'Bishops Abbots Kings' })).rejects.toThrow(
+      /No Uber Travel location found/,
+    )
+    const lookups = h.calls.filter((c) => c.operationName === 'SearchLocation').map((c) => c.variables.request.name)
+    expect(lookups).toEqual(['Bishops Abbots Kings', "Bishop's Abbots Kings", "Bishops Abbot's Kings"])
+  })
+
+  it('does not treat a word ending in a double s as a possessive, in any letter case', async () => {
+    const h = harness(standardScript())
+    await expect(h.client.searchFares({ ...BASE_QUERY, from: 'BISHOPS CROSS' })).rejects.toThrow(
+      /No Uber Travel location found/,
+    )
+    const lookups = h.calls.filter((c) => c.operationName === 'SearchLocation').map((c) => c.variables.request.name)
+    expect(lookups).toEqual(['BISHOPS CROSS', "BISHOP's CROSS"])
+  })
+
+  it('takes only a proper match from a possessive spelling, never its first suggestion', async () => {
+    const other = loadOmioFixture('search-location-station')
+    other.data.SearchLocation.locations[0].name = "Shepherd's Well"
+    const h = harness({
+      ...standardScript(),
+      SearchLocation: [
+        (variables: any) => (variables.request.name === "Shepherd's Bush" ? other : locationResponder(variables)),
+      ],
+    })
+    await expect(h.client.searchFares({ ...BASE_QUERY, from: 'Shepherds Bush' })).rejects.toThrow(
+      /No Uber Travel location found for "Shepherds Bush"\. Uber Travel offers: Shepherd's Well\./,
+    )
+    expect(h.operations()).not.toContain('SearchJourneys')
+  })
+
+  it('tries the possessive spelling for a station code too, and still demands the right station', async () => {
+    // SAC is "St Albans City" in the station table.
+    const stored = loadOmioFixture('search-location-station')
+    stored.data.SearchLocation.locations[0].name = "St Alban's City"
+    stored.data.SearchLocation.locations[0].id = '555'
+    const answer = (name: string, reply: unknown) => (variables: any) =>
+      variables.request.name === name ? reply : locationResponder(variables)
+
+    const right = harness({ ...standardScript(), SearchLocation: [answer("St Alban's City", stored)] })
+    const result = await right.client.searchFares({ ...BASE_QUERY, from: 'SAC' })
+    expect(result.origin).toMatchObject({ id: '555', name: "St Alban's City" })
+
+    const wrongStation = loadOmioFixture('search-location-station')
+    wrongStation.data.SearchLocation.locations[0].name = "St Alban's"
+    const wrong = harness({ ...standardScript(), SearchLocation: [answer("St Alban's City", wrongStation)] })
+    await expect(wrong.client.searchFares({ ...BASE_QUERY, from: 'SAC' })).rejects.toThrow(
+      /No Uber Travel location found for "SAC" \(St Albans City\).*Uber Travel offers: St Alban's\./,
+    )
+  })
+
   it('names only British stations when a station code does not resolve', async () => {
     const mixed = loadOmioFixture('search-location-city')
     mixed.data.SearchLocation.locations = [
