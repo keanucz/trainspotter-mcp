@@ -11,7 +11,7 @@ Built this because I kept asking "is my train delayed?" and "how much is a ticke
 - Full service details with every calling point and delay prediction
 - Station-to-station train search
 - Disruption messages
-- 825 stations with fuzzy name search
+- 815 stations with fuzzy name search
 
 **Historical performance** (HSP)
 - Delay statistics between any two stations
@@ -116,13 +116,19 @@ The BR Fares API returns all fares from the National Rail database. Prices are w
 
 Common railcard codes for `search_fares`:
 - `YNG` -- 16-25 Railcard
-- `TSU` -- Two Together
+- `TST` -- 26-30 Railcard
+- `TSU` -- 16-17 Saver
+- `2TR` -- Two Together
 - `SRN` -- Senior
 - `FAM` -- Family & Friends
 - `DIS` -- Disabled Persons
-- `NGC` -- Network Railcard
+- `NEW` -- Network Railcard
+- `NGC` -- Annual Gold Card
 - `HMF` -- HM Forces
+- `VET` -- Veterans
 - `JCP` -- Jobcentre Plus
+
+`list_railcards` returns the full list.
 
 ## Uber Travel (Omio) price search notes
 

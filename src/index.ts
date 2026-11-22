@@ -170,7 +170,7 @@ const tools: Tool[] = [
   {
     name: 'search_fares',
     description:
-      'Search for train fares between two UK stations. Returns walk-up fares (anytime, off-peak, super off-peak), restricted availability fares (advance), and pay-as-you-go fares. Prices include adult and child. Supports up to 3 railcards (e.g. YNG=16-25, TSU=Two Together, SRN=Senior, FAM=Family & Friends, DIS=Disabled, NGC=Network). Limited to 100 searches per month on free tier.',
+      'Search for train fares between two UK stations. Returns walk-up fares (anytime, off-peak, super off-peak), restricted availability fares (advance), and pay-as-you-go fares. Prices include adult and child. Supports up to 3 railcards (e.g. YNG=16-25, 2TR=Two Together, SRN=Senior, FAM=Family & Friends, DIS=Disabled, NEW=Network). Limited to 100 searches per month on free tier.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -186,7 +186,7 @@ const tools: Tool[] = [
           type: 'array',
           items: { type: 'string' },
           description:
-            'Railcard codes to apply (max 3). Common: YNG=16-25, TSU=Two Together, SRN=Senior, FAM=Family & Friends, DIS=Disabled Persons, NGC=Network Railcard, HMF=HM Forces, JCP=Jobcentre Plus',
+            'Railcard codes to apply (max 3). Common: YNG=16-25, TST=26-30, TSU=16-17 Saver, 2TR=Two Together, SRN=Senior, FAM=Family & Friends, DIS=Disabled Persons, NEW=Network Railcard, NGC=Annual Gold Card, HMF=HM Forces, JCP=Jobcentre Plus. list_railcards has the full list',
         },
         date: {
           type: 'string',

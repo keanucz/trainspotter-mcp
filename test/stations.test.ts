@@ -10,6 +10,11 @@ describe('STATIONS map', () => {
     expect(STATIONS.size).toBeGreaterThanOrEqual(500);
   });
 
+  it('should hold exactly the number of stations the README states', () => {
+    // A duplicate code in the table would be swallowed by the Map and show up here.
+    expect(STATIONS.size).toBe(815);
+  });
+
   it('should have string keys and string values', () => {
     for (const [crs, name] of STATIONS) {
       expect(typeof crs).toBe('string');
@@ -70,7 +75,7 @@ describe('Major city stations', () => {
     ['CBG', 'Cambridge'],
     ['YRK', 'York'],
     ['PLY', 'Plymouth'],
-    ['SOT', 'Southampton Central'],
+    ['SOU', 'Southampton Central'],
     ['RDG', 'Reading'],
     ['PBO', 'Peterborough'],
     ['DHM', 'Durham'],
@@ -85,8 +90,8 @@ describe('Major city stations', () => {
 
 describe('Airport stations', () => {
   const airports: Array<[string, string]> = [
-    ['STN', 'Stansted Airport'],
-    ['LGW', 'Gatwick Airport'],
+    ['SSD', 'Stansted Airport'],
+    ['GTW', 'Gatwick Airport'],
     ['LTN', 'Luton Airport Parkway'],
     ['BHI', 'Birmingham International'],
     ['MIA', 'Manchester Airport'],
@@ -94,6 +99,34 @@ describe('Airport stations', () => {
 
   it.each(airports)('should contain %s (%s)', (crs, name) => {
     expect(STATIONS.get(crs)).toBe(name);
+  });
+});
+
+describe('Codes that used to point at the wrong station', () => {
+  // Each of these was once listed under another station's code, or held
+  // another station's name. The names are what Darwin reports for the code.
+  const corrected: Array<[string, string]> = [
+    ['SFA', 'Stratford International'],
+    ['ZFD', 'Farringdon'],
+    ['BTN', 'Brighton'],
+    ['SOT', 'Stoke-on-Trent'],
+    ['DAR', 'Darlington'],
+    ['CAR', 'Carlisle'],
+    ['CTR', 'Chester'],
+    ['STN', 'Stonehaven'],
+  ];
+
+  it.each(corrected)('should map %s to %s', (crs, name) => {
+    expect(STATIONS.get(crs)).toBe(name);
+  });
+
+  it('should not keep airport codes from the airline world', () => {
+    expect(STATIONS.has('LGW')).toBe(false);
+  });
+
+  it('should list every station name once', () => {
+    const names = [...STATIONS.values()];
+    expect(new Set(names).size).toBe(names.length);
   });
 });
 
