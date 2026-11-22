@@ -5,7 +5,13 @@ import {
   londonWallTimeToUtc,
   normalizeFareQuery,
 } from '../src/omio.js'
-import { OMIO_STATION_NAMES, comparableName, omioStationName, pickLocation } from '../src/omio-locations.js'
+import {
+  OMIO_STATION_NAMES,
+  comparableName,
+  distanceKm,
+  omioStationLookup,
+  pickLocation,
+} from '../src/omio-locations.js'
 import { OmioSchemaError, parseLocations } from '../src/omio-parse.js'
 import { STATIONS } from '../src/stations.js'
 import { loadOmioFixture } from './omio-fixtures.js'
@@ -281,21 +287,73 @@ describe('pickLocation', () => {
     // whose lookup names reduced to the same words could be mistaken for each other.
     const codesByName = new Map<string, string[]>()
     for (const [code, name] of STATIONS) {
-      const key = comparableName(omioStationName(code, name))
-      codesByName.set(key, [...(codesByName.get(key) ?? []), code])
+      // Every name a code may be looked up by counts, not only the first.
+      for (const lookupName of new Set(omioStationLookup(code, name).names.map(comparableName))) {
+        codesByName.set(lookupName, [...(codesByName.get(lookupName) ?? []), code])
+      }
     }
     const clashes = [...codesByName.entries()].filter(([, codes]) => codes.length > 1)
     expect(clashes).toEqual([])
   })
 
   it('only lists a search name for a station code that exists and whose table name differs', () => {
-    for (const [code, searchName] of Object.entries(OMIO_STATION_NAMES)) {
+    for (const [code, alias] of Object.entries(OMIO_STATION_NAMES)) {
       const tableName = STATIONS.get(code)
       expect(tableName, code).toBeDefined()
-      expect(searchName, code).not.toBe(tableName)
+      expect(alias.name, code).not.toBe(tableName)
+      // Somewhere in Great Britain, so a slip of sign or of digits shows up.
+      expect(alias.latitude, code).toBeGreaterThan(49.9)
+      expect(alias.latitude, code).toBeLessThan(60.9)
+      expect(alias.longitude, code).toBeGreaterThan(-7.6)
+      expect(alias.longitude, code).toBeLessThan(1.8)
     }
-    expect(omioStationName('lpy', 'Liverpool South Parkway')).toBe('Liverpool South Parkway')
-    expect(omioStationName('abw', 'Abbey Wood')).toBe('Abbey Wood Station')
+  })
+
+  it('looks most stations up by the table name alone, anywhere', () => {
+    expect(omioStationLookup('lpy', 'Liverpool South Parkway')).toEqual({
+      names: ['Liverpool South Parkway'],
+      near: null,
+    })
+  })
+
+  it('looks a renamed station up by the stored name first, then the table name, in its place', () => {
+    expect(omioStationLookup('abw', 'Abbey Wood')).toEqual({
+      names: ['Abbey Wood Station', 'Abbey Wood'],
+      near: { latitude: 51.4908, longitude: 0.1204 },
+    })
+  })
+
+  it('measures distance well enough to tell a station from its namesake', () => {
+    const cumbria = { latitude: 54.2914, longitude: -3.3937 }
+    const merseyside = { latitude: 53.4533, longitude: -2.9945 }
+    expect(distanceKm(cumbria, cumbria)).toBe(0)
+    expect(distanceKm(cumbria, merseyside)).toBeGreaterThan(90)
+    expect(distanceKm(cumbria, merseyside)).toBeLessThan(100)
+    // About 111 km to a degree of latitude.
+    expect(distanceKm({ latitude: 51, longitude: 0 }, { latitude: 52, longitude: 0 })).toBeCloseTo(111.2, 0)
+  })
+
+  it('only takes a station for a CRS code when it is where the station should be', () => {
+    const here = { latitude: 54.2914, longitude: -3.3937 }
+    const right = { ...station('Bootle'), latitude: 54.2912, longitude: -3.3938 }
+    const namesake = { ...station('Bootle'), id: 'other', latitude: 53.4533, longitude: -2.9945 }
+    expect(pickLocation([right], 'Bootle', 'crs', here)?.id).toBe('Bootle')
+    expect(pickLocation([namesake], 'Bootle', 'crs', here)).toBeNull()
+    // Two of the same name: the place decides.
+    expect(pickLocation([namesake, right], 'Bootle', 'crs', here)?.id).toBe('Bootle')
+  })
+
+  it('counts a station that is listed twice as one station', () => {
+    const listedTwice = [station('Newport'), station('Newport')] // same id
+    expect(pickLocation(listedTwice, 'Newport', 'crs')?.name).toBe('Newport')
+  })
+
+  it('refuses to choose between two stations of the same name for a CRS code', () => {
+    const first = { ...station('Newport'), id: 'one' }
+    const second = { ...station('Newport'), id: 'two', latitude: 50.7 }
+    expect(pickLocation([first, second], 'Newport', 'crs')).toBeNull()
+    // Free text keeps the search's own order.
+    expect(pickLocation([first, second], 'Newport', 'exact')?.id).toBe('one')
   })
 
   it('keeps a bracketed qualifier as part of the name', () => {
@@ -1042,8 +1100,12 @@ describe('OmioClient.searchFares', () => {
     ['WCH', 'Whitchurch', 'Whitchurch'],
   ])('looks %s up as "%s"', async (code, term, storedName) => {
     const stored = loadOmioFixture('search-location-station')
-    stored.data.SearchLocation.locations[0].name = storedName
-    stored.data.SearchLocation.locations[0].id = '432'
+    Object.assign(stored.data.SearchLocation.locations[0], {
+      name: storedName,
+      id: '432',
+      latitude: OMIO_STATION_NAMES[code]?.latitude,
+      longitude: OMIO_STATION_NAMES[code]?.longitude,
+    })
     const h = harness({
       ...standardScript(),
       SearchLocation: [(variables: any) => (variables.request.name === term ? stored : locationResponder(variables))],
@@ -1065,9 +1127,131 @@ describe('OmioClient.searchFares', () => {
     }))
     const h = harness({ ...standardScript(), SearchLocation: [others] })
     await expect(h.client.searchFares({ ...BASE_QUERY, from: 'WCH' })).rejects.toThrow(
-      /No Uber Travel location found for "WCH" \(Whitchurch \(Hampshire\), searched as "Whitchurch"\).*Uber Travel offers: Whitchurch \(Shropshire\), Whitchurch \(Cardiff\)\./,
+      /No Uber Travel location found for "WCH" \(Whitchurch \(Hampshire\), also searched as "Whitchurch"\): no British station with that name came back in the right place\. Uber Travel offers: Whitchurch \(Shropshire\), Whitchurch \(Cardiff\)\./,
     )
     expect(h.operations()).not.toContain('SearchJourneys')
+  })
+
+  it('says so when a station code is refused because two stations share its name', async () => {
+    const twins = loadOmioFixture('search-location-city')
+    twins.data.SearchLocation.locations = ['111', '222'].map((id) => ({
+      ...twins.data.SearchLocation.locations[1],
+      id,
+      name: 'London Waterloo',
+      type: 'station',
+      countryCode: 'GB',
+    }))
+    const h = harness({ ...standardScript(), SearchLocation: [twins] })
+    await expect(h.client.searchFares({ ...BASE_QUERY, from: 'WAT' })).rejects.toThrow(
+      /No Uber Travel location found for "WAT" \(London Waterloo\): more than one British station with that name came back, and they cannot be told apart\./,
+    )
+    expect(h.operations()).not.toContain('SearchJourneys')
+  })
+
+  it('does not call two namesakes elsewhere a choice between stations', async () => {
+    // BOC is looked up as "Bootle" in Cumbria. Two stations of that name on Merseyside
+    // are both in the wrong place, so nothing qualified: that is what the error must say.
+    const namesakes = loadOmioFixture('search-location-city')
+    namesakes.data.SearchLocation.locations = ['801', '802'].map((id) => ({
+      ...namesakes.data.SearchLocation.locations[1],
+      id,
+      name: 'Bootle',
+      type: 'station',
+      countryCode: 'GB',
+      latitude: 53.4533,
+      longitude: -2.9945,
+    }))
+    const h = harness({
+      ...standardScript(),
+      SearchLocation: [
+        (variables: any) => (variables.request.name === 'Bootle' ? namesakes : locationResponder(variables)),
+      ],
+    })
+    const failure = await h.client.searchFares({ ...BASE_QUERY, from: 'BOC' }).catch((thrown: unknown) => thrown)
+    expect((failure as Error).message).toContain('no British station with that name came back in the right place.')
+    expect((failure as Error).message).not.toContain('more than one')
+  })
+
+  it('keeps refusing two same-named stations when another spelling returns only one of them', async () => {
+    // SPB is "Shepherd's Bush": looked up with its apostrophe, then without.
+    const entry = (id: string) => ({
+      ...loadOmioFixture('search-location-station').data.SearchLocation.locations[0],
+      id,
+      name: "Shepherd's Bush",
+    })
+    const both = loadOmioFixture('search-location-station')
+    both.data.SearchLocation.locations = [entry('one'), entry('two')]
+    const single = loadOmioFixture('search-location-station')
+    single.data.SearchLocation.locations = [entry('one')]
+    const h = harness({
+      ...standardScript(),
+      SearchLocation: [
+        (variables: any) =>
+          variables.request.name === "Shepherd's Bush"
+            ? both
+            : variables.request.name === 'Shepherds Bush'
+              ? single
+              : locationResponder(variables),
+      ],
+    })
+    await expect(h.client.searchFares({ ...BASE_QUERY, from: 'SPB' })).rejects.toThrow(
+      /more than one British station with that name came back, and they cannot be told apart/,
+    )
+    const lookups = h.calls.filter((c) => c.operationName === 'SearchLocation').map((c) => c.variables.request.name)
+    expect(lookups).toEqual(["Shepherd's Bush", 'Shepherds Bush'])
+  })
+
+  it('falls back to the table name when the search stops using its own name for a station', async () => {
+    // BUW is stored as "Burley-in-Wharfdale" today. Should that spelling be corrected,
+    // the stored name finds nothing and the table's "Burley-in-Wharfedale" does.
+    const corrected = loadOmioFixture('search-location-station')
+    Object.assign(corrected.data.SearchLocation.locations[0], {
+      name: 'Burley-in-Wharfedale',
+      id: '700',
+      latitude: 53.9081,
+      longitude: -1.7533,
+    })
+    const h = harness({
+      ...standardScript(),
+      SearchLocation: [
+        (variables: any) =>
+          variables.request.name === 'Burley-in-Wharfedale' ? corrected : locationResponder(variables),
+      ],
+    })
+    const result = await h.client.searchFares({ ...BASE_QUERY, from: 'BUW' })
+    const lookups = h.calls.filter((c) => c.operationName === 'SearchLocation').map((c) => c.variables.request.name)
+    expect(lookups).toEqual(['Burley-in-Wharfdale', 'Burley-in-Wharfedale', 'London Euston'])
+    expect(result.origin).toMatchObject({ id: '700', name: 'Burley-in-Wharfedale' })
+  })
+
+  it('does not take a namesake elsewhere for a renamed station', async () => {
+    // BOC is looked up as "Bootle". A station of that name on Merseyside is not it.
+    const namesake = loadOmioFixture('search-location-station')
+    Object.assign(namesake.data.SearchLocation.locations[0], {
+      name: 'Bootle',
+      id: '701',
+      latitude: 53.4533,
+      longitude: -2.9945,
+    })
+    const h = harness({
+      ...standardScript(),
+      SearchLocation: [
+        (variables: any) => (variables.request.name === 'Bootle' ? namesake : locationResponder(variables)),
+      ],
+    })
+    await expect(h.client.searchFares({ ...BASE_QUERY, from: 'BOC' })).rejects.toThrow(
+      /No Uber Travel location found for "BOC" \(Bootle \(Cumbria\), also searched as "Bootle"\): no British station with that name came back in the right place\. Uber Travel offers: Bootle\./,
+    )
+    expect(h.operations()).not.toContain('SearchJourneys')
+  })
+
+  it('resolves a single place on request, the way a fare search would', async () => {
+    const h = harness(standardScript())
+    expect(await h.client.resolvePlace('LPY')).toMatchObject({ id: '319585', name: 'Liverpool South Parkway' })
+    expect(await h.client.resolvePlace(' Liverpool ')).toMatchObject({ name: 'Liverpool', type: 'location' })
+    await expect(h.client.resolvePlace('  ')).rejects.toThrow(/A place is required/)
+    await expect(h.client.resolvePlace('QQQ')).rejects.toThrow(/not a station code this server knows/)
+    expect(h.operations().every((operation) => operation === 'SearchLocation')).toBe(true)
   })
 
   it('sends a curly apostrophe as a plain one', async () => {

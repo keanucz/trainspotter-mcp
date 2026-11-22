@@ -25,9 +25,11 @@ import {
 import {
   comparableName,
   locationSearchTerms,
-  omioStationName,
+  omioStationLookup,
   pickLocation,
   possessiveSearchTerm,
+  stationCandidates,
+  type GeoPoint,
   type LocationMatch,
 } from './omio-locations.js';
 import { getStationName } from './stations.js';
@@ -290,6 +292,18 @@ export function londonWallTimeToUtc(date: string, time: string): string {
   return new Date(wallAsUtc - londonOffsetMs(wallAsUtc)).toISOString();
 }
 
+/** The error for a place that did not resolve. Naming what did come back saves the caller a second lookup. */
+function locationNotFound(input: string, detail: string, seen: readonly OmioLocation[]): Error {
+  const stationNames = seen
+    .filter((location) => location.type === 'station')
+    .map((location) => location.name.slice(0, MAX_OFFERED_NAME_LENGTH));
+  const offered = [...new Set(stationNames)].slice(0, MAX_OFFERED_LOCATIONS);
+  const offer = offered.length > 0 ? ` Uber Travel offers: ${offered.join(', ')}.` : '';
+  return new Error(
+    `No Uber Travel location found for "${input}"${detail}${offer} Use omio_locations to see what it knows, then pass that name.`,
+  );
+}
+
 export class OmioClient {
   private readonly fetchFn: typeof fetch;
   private readonly sleep: (ms: number) => Promise<void>;
@@ -307,6 +321,14 @@ export class OmioClient {
 
   async searchLocations(query: string): Promise<OmioLocation[]> {
     return (await this.findLocations(query)).locations;
+  }
+
+  /** Resolves a station code or a place name to the location a fare search would use for it. */
+  async resolvePlace(input: string): Promise<OmioLocation> {
+    if (typeof input !== 'string' || input.trim() === '') {
+      throw new Error('A place is required: a CRS code or a place name');
+    }
+    return this.runExclusive(() => this.resolveLocation(input));
   }
 
   /** Like searchLocations, and also says which spelling of the query the result belongs to. */
@@ -389,75 +411,100 @@ export class OmioClient {
   }
 
   /**
-   * Looks the terms up one after another and stops at the first reply that
-   * holds a match for `name`. Also returns every location seen on the way, in
-   * reply order, which is what the caller can offer when nothing matched.
+   * Looks the terms up one after another and stops as soon as the replies so
+   * far hold a match for `name`. The match is chosen from everything seen, not
+   * from the latest reply alone, so two same-named stations refused for a
+   * station code stay refused when a later spelling returns only one of them.
+   * Also returns every location seen, in reply order, which is what the caller
+   * can offer when nothing matched.
    */
   private async lookupFirstMatch(
     terms: readonly string[],
     name: string,
     match: LocationMatch,
+    near: GeoPoint | null,
   ): Promise<{ picked: OmioLocation | null; seen: OmioLocation[] }> {
     let seen: OmioLocation[] = [];
     for (const term of terms) {
       const locations = await this.lookupLocations(term);
       seen = [...seen, ...locations];
-      const picked = pickLocation(locations, name, match);
+      const picked = pickLocation(seen, name, match, near);
       if (picked) return { picked, seen };
     }
     return { picked: null, seen };
+  }
+
+  /**
+   * Looks one name up under every spelling worth trying and returns a proper
+   * match for it, if there is one: first the name as given (see
+   * locationSearchTerms), then, only when the search knew nothing at all, one
+   * possessive spelling. `asGiven` holds what the first step saw, `seen`
+   * everything.
+   */
+  private async matchByName(
+    name: string,
+    match: LocationMatch,
+    near: GeoPoint | null,
+  ): Promise<{ picked: OmioLocation | null; asGiven: OmioLocation[]; seen: OmioLocation[] }> {
+    const terms = locationSearchTerms(name);
+    const asGiven = await this.lookupFirstMatch(terms, name, match, near);
+    if (asGiven.picked) return { picked: asGiven.picked, asGiven: asGiven.seen, seen: asGiven.seen };
+    // A search that knew nothing at all is what a missing apostrophe looks
+    // like. That spelling is a guess, so only a proper match is taken from it.
+    const guess = asGiven.seen.length === 0 ? possessiveSearchTerm(terms[0] ?? name) : null;
+    if (guess === null) return { picked: null, asGiven: asGiven.seen, seen: asGiven.seen };
+    const possessive = await this.lookupFirstMatch([guess], name, match, near);
+    return { picked: possessive.picked, asGiven: asGiven.seen, seen: [...asGiven.seen, ...possessive.seen] };
   }
 
   private async resolveLocation(input: string): Promise<OmioLocation> {
     const trimmed = input.trim();
     const looksLikeCrs = /^[A-Za-z]{3}$/.test(trimmed);
     const stationName = looksLikeCrs ? getStationName(trimmed) : undefined;
-    // The search stores a few stations under another name than the station table does.
-    const name = stationName ? omioStationName(trimmed, stationName) : trimmed;
-    const terms = locationSearchTerms(name);
-    // A shortened term lists places that merely share a first word, so the
-    // first suggestion is no longer a fair reading of what was asked for.
-    const shortened = comparableName(terms[0] ?? name) !== comparableName(name);
-    // Three letters that are not a code we know may be a typo or a code missing
-    // from the station table, so only an exact place name is accepted for them.
-    const match: LocationMatch = stationName ? 'crs' : looksLikeCrs || shortened ? 'exact' : 'free';
+    if (stationName !== undefined) return this.resolveStation(trimmed, stationName);
 
-    // Every spelling is tried for a proper match first. The first suggestion
-    // is only a fallback for free text, once none of them matched.
-    const strict: LocationMatch = match === 'free' ? 'exact' : match;
-    const asGiven = await this.lookupFirstMatch(terms, name, strict);
-    // A search that knew nothing at all is what a missing apostrophe looks
-    // like. Those spellings are a guess, so only a proper match is taken from them.
-    const searchKnewNothing = !asGiven.picked && asGiven.seen.length === 0;
-    const possessiveGuess = searchKnewNothing ? possessiveSearchTerm(terms[0] ?? name) : null;
-    const possessive =
-      possessiveGuess === null
-        ? { picked: null, seen: [] }
-        : await this.lookupFirstMatch([possessiveGuess], name, strict);
-    const picked =
-      asGiven.picked ?? possessive.picked ?? (match === 'free' ? (asGiven.seen[0] ?? null) : null);
-    if (!picked) {
-      const locations = [...asGiven.seen, ...possessive.seen];
-      // Say what was searched when the search knows the station by another name.
-      const searchedAs = stationName !== undefined && name !== stationName ? `, searched as "${name}"` : '';
-      const detail = stationName
-        ? ` (${stationName}${searchedAs}): no British station with that name came back.`
-        : looksLikeCrs
-          ? '. It is not a station code this server knows and no place has exactly that name, so pass the full station name.'
-          : '.';
-      // Naming what did come back saves the caller a second lookup.
-      const stationNames = locations
-        .filter(
-          (location) => location.type === 'station' && (match !== 'crs' || location.countryCode === 'GB'),
-        )
-        .map((location) => location.name.slice(0, MAX_OFFERED_NAME_LENGTH));
-      const offered = [...new Set(stationNames)].slice(0, MAX_OFFERED_LOCATIONS);
-      const offer = offered.length > 0 ? ` Uber Travel offers: ${offered.join(', ')}.` : '';
-      throw new Error(
-        `No Uber Travel location found for "${trimmed}"${detail}${offer} Use omio_locations to see what it knows, then pass that name.`,
-      );
+    // Every spelling is tried for a proper match first.
+    const found = await this.matchByName(trimmed, 'exact', null);
+    if (found.picked) return found.picked;
+
+    // The search's first suggestion is a fallback for free text only, and only
+    // from the name as given. It is not offered for three letters that are not
+    // a code we know (a typo, or a code missing from the station table), nor
+    // when the search term had to be shortened: that list holds places that
+    // merely share a first word with what was asked for.
+    const shortened = comparableName(locationSearchTerms(trimmed)[0] ?? trimmed) !== comparableName(trimmed);
+    const suggestion = looksLikeCrs || shortened ? undefined : found.asGiven[0];
+    if (suggestion) return suggestion;
+
+    const detail = looksLikeCrs
+      ? '. It is not a station code this server knows and no place has exactly that name, so pass the full station name.'
+      : '.';
+    throw locationNotFound(trimmed, detail, found.seen);
+  }
+
+  /**
+   * Resolves a station code this server knows. Only a British station stored
+   * under a name the code is looked up by is accepted, never a suggestion.
+   */
+  private async resolveStation(code: string, stationName: string): Promise<OmioLocation> {
+    const lookup = omioStationLookup(code, stationName);
+    let seen: OmioLocation[] = [];
+    for (const name of lookup.names) {
+      const found = await this.matchByName(name, 'crs', lookup.near);
+      if (found.picked) return found.picked;
+      seen = [...seen, ...found.seen];
     }
-    return picked;
+    // Say what else was searched when the search knows the station by another name.
+    const otherNames = lookup.names.filter((name) => name !== stationName).map((name) => `"${name}"`);
+    const alsoSearched = otherNames.length > 0 ? `, also searched as ${otherNames.join(' and ')}` : '';
+    const british = seen.filter((location) => location.countryCode === 'GB');
+    // Two different stations that both qualified were refused, not missing: say so.
+    const qualifying = (name: string): number => stationCandidates(seen, name, lookup.near).length;
+    const where = lookup.near ? ' in the right place' : '';
+    const reason = lookup.names.some((name) => qualifying(name) > 1)
+      ? 'more than one British station with that name came back, and they cannot be told apart'
+      : `no British station with that name came back${where}`;
+    throw locationNotFound(code, ` (${stationName}${alsoSearched}): ${reason}.`, british);
   }
 
   private async runSearch(

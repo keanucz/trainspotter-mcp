@@ -141,7 +141,7 @@ Common railcard codes for `search_fares`:
 - **It is not a full-day timetable.** Trains come back for at least `hours` hours from `time` (defaults: 4 hours from 06:00). Raise `hours` (up to 12) or search again with a later `time` for the rest of the day. Coaches come back for the rest of the day in one go.
 - **Coaches use their own stops.** A coach row shows the stop it really leaves from, which is usually not the rail station you searched.
 
-Arguments: `from` and `to` take a CRS code (`LPY`) or a place name (`Liverpool`). A CRS code only ever resolves to the station stored under the name that code is looked up by, compared without regard to case and punctuation (`WAT` is London Waterloo, never London Waterloo East). That name is the station table's, except for the eight stations mentioned below; if Uber Travel lists it under any other name the search stops with an error that names the stations it does offer, instead of guessing. All 815 codes in the station table were checked against the live search in November 2026: each one resolves, and to the station at that code's real position. Eight are stored there under another name (`ABW` as "Abbey Wood Station", for example) and are looked up by that name; the list is in `src/omio-locations.ts`. `date` is `YYYY-MM-DD`; optional `time` (`HH:MM`, UK local), `hours` (1 to 12, default 4), `modes` (`train`, `coach`), `railcards` (one code), `age` and `direct_only`. If a place does not resolve, `omio_locations` shows the names Uber Travel knows.
+Arguments: `from` and `to` take a CRS code (`LPY`) or a place name (`Liverpool`). A CRS code only ever resolves to the station stored under the name that code is looked up by, compared without regard to case and punctuation (`WAT` is London Waterloo, never London Waterloo East). That name is the station table's, except for the eight stations mentioned below; if Uber Travel lists it under any other name the search stops with an error that names the stations it does offer, instead of guessing. All 815 codes in the station table were checked against the live search in November 2026: each one resolved, and to a station within 300 metres of that code's position in a public station list. The repeatable check under Development confirms that every code still resolves; it compares positions only for the eight stations named next. Eight are stored there under another name (`ABW` as "Abbey Wood Station", for example). Those are looked up by that name first and by the table's name second, and a result only counts if it is within a kilometre of where the station is, so a namesake elsewhere is never taken. The list is in `src/omio-locations.ts`. `date` is `YYYY-MM-DD`; optional `time` (`HH:MM`, UK local), `hours` (1 to 12, default 4), `modes` (`train`, `coach`), `railcards` (one code), `age` and `direct_only`. If a place does not resolve, `omio_locations` shows the names Uber Travel knows.
 
 Railcard codes accepted by `search_omio_fares` (one per search): `YNG` 16-25, `TST` 26-30, `TSU` 16-17 Saver, `SRN` Senior, `2TR` Two Together, `FAM` Family & Friends, `DIS` Disabled Persons, `DIC` Disabled Child, `HMF` HM Forces, `VET` Veterans, `NEW` Network Railcard, `NGC` Gold Card, `JCP` Jobcentre Plus.
 
@@ -172,6 +172,11 @@ npm test        # run tests (vitest)
 
 # opt-in: one real search against Uber Travel
 OMIO_LIVE=1 npx vitest run test/omio.live.test.ts
+
+# opt-in, 15 to 20 minutes: look every station code up against Uber Travel, one code a second
+OMIO_LIVE_STATIONS=1 npx vitest run test/omio.live.test.ts
+# the same for a few codes only
+OMIO_LIVE_STATIONS=1 OMIO_LIVE_STATION_CODES=ABW,BIS npx vitest run test/omio.live.test.ts
 ```
 
 Around 300 tests covering SOAP XML parsing, fare response handling, station lookups, delay calculation edge cases, and Uber Travel response parsing against fixtures cut from a sanitized browser capture.
