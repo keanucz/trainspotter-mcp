@@ -7,7 +7,7 @@
 const stationData: ReadonlyArray<readonly [string, string]> = [
   // === London Terminals ===
   ["KGX", "London Kings Cross"],
-  ["STP", "London St Pancras"],
+  ["STP", "London St Pancras International"],
   ["PAD", "London Paddington"],
   ["VIC", "London Victoria"],
   ["WAT", "London Waterloo"],
@@ -630,7 +630,7 @@ const stationData: ReadonlyArray<readonly [string, string]> = [
   ["SRU", "South Ruislip"],
   ["DNM", "Denham"],
   ["GER", "Gerrards Cross"],
-  ["SRG", "Seer Green"],
+  ["SRG", "Seer Green & Jordans"],
   ["BCF", "Beaconsfield"],
   ["HWY", "High Wycombe"],
   ["SDR", "Saunderton"],
@@ -793,7 +793,7 @@ const stationData: ReadonlyArray<readonly [string, string]> = [
   ["SEL", "Sellafield"],
   ["SSC", "Seascale"],
   ["DRI", "Drigg"],
-  ["RAV", "Ravenglass"],
+  ["RAV", "Ravenglass for Eskdale"],
   ["BOC", "Bootle (Cumbria)"],
   ["SIC", "Silecroft"],
   ["MLM", "Millom"],

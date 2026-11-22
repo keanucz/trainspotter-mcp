@@ -136,12 +136,12 @@ Common railcard codes for `search_fares`:
 
 **Read this before relying on it:**
 
-- **It is an undocumented API.** Nobody has promised it will keep working. Uber can change or remove it at any time, and when the response shape changes the tools fail with an explicit "response did not match the expected shape" error instead of guessing.
+- **It is an undocumented API.** Nobody has promised it will keep working. Uber can change or remove it at any time, and when it changes the tools fail with an explicit error that says so ("response did not match the expected shape", or "turned the request down before running it") instead of guessing.
 - **Prices are list prices at search time, not a booking.** Nothing is reserved or held. The price can change, or the fare can sell out, between the search and a purchase. Always confirm on the retailer's own site before quoting a price to someone.
 - **It is not a full-day timetable.** Trains come back for at least `hours` hours from `time` (defaults: 4 hours from 06:00). Raise `hours` (up to 12) or search again with a later `time` for the rest of the day. Coaches come back for the rest of the day in one go.
 - **Coaches use their own stops.** A coach row shows the stop it really leaves from, which is usually not the rail station you searched.
 
-Arguments: `from` and `to` take a CRS code (`LPY`) or a place name (`Liverpool`). A CRS code only ever resolves to the station with that name; if Uber Travel lists it under a different name the search stops with an error that names the stations it does offer, instead of guessing. `date` is `YYYY-MM-DD`; optional `time` (`HH:MM`, UK local), `hours` (1 to 12, default 4), `modes` (`train`, `coach`), `railcards` (one code), `age` and `direct_only`. If a place does not resolve, `omio_locations` shows the names Uber Travel knows.
+Arguments: `from` and `to` take a CRS code (`LPY`) or a place name (`Liverpool`). A CRS code only ever resolves to the station with that same name, compared without regard to case and punctuation (`WAT` is London Waterloo, never London Waterloo East); if Uber Travel lists it under any other name the search stops with an error that names the stations it does offer, instead of guessing. `date` is `YYYY-MM-DD`; optional `time` (`HH:MM`, UK local), `hours` (1 to 12, default 4), `modes` (`train`, `coach`), `railcards` (one code), `age` and `direct_only`. If a place does not resolve, `omio_locations` shows the names Uber Travel knows.
 
 Railcard codes accepted by `search_omio_fares` (one per search): `YNG` 16-25, `TST` 26-30, `TSU` 16-17 Saver, `SRN` Senior, `2TR` Two Together, `FAM` Family & Friends, `DIS` Disabled Persons, `DIC` Disabled Child, `HMF` HM Forces, `VET` Veterans, `NEW` Network Railcard, `NGC` Gold Card, `JCP` Jobcentre Plus.
 
@@ -159,7 +159,9 @@ dep→arr | from → to | changes | operator | mode | price
 
 The client is deliberately gentle with a service that never offered an API: one search at a time, polling once a second (the first results get 20 seconds, the whole search about 35; the budget is checked between requests, so one slow reply can run it over), only as many requests for later trains as `hours` needs and never more than ten, a five-minute result cache, and no retries. Please keep it that way.
 
-How it tells a broken API from a failed search: the server labels its errors with a code. A query it no longer accepts (changed field, changed input type, or a move to server-side stored queries) is reported as a schema change, which means these tools need updating. Anything else, such as an expired search, is reported as the plain error it is.
+How it tells a broken API from a failed search: the server turns down a request that does not fit its schema before running it (HTTP 400: a changed field, a changed input type, a removed enum value, or a move to server-side stored queries). That is reported as a schema change, which means these tools need updating. A search the server ran and could not finish (HTTP 500), such as an expired search, is reported as the plain error it is.
+
+Place names: the location search wants an apostrophe exactly where its stored name has one. A name typed with an apostrophe is tried as typed and then without it. A name typed without one, which the search does not know, is tried once more with an apostrophe put back (`Shepherds Bush` is stored as `Shepherd's Bush`). A fare search remembers an unknown name for a minute, so an immediate retry does not look it up again. `omio_locations` does not use that memory: for a name it has no stored result for, it asks, first as given and then with the same spellings a fare search would try.
 
 ## Development
 
@@ -172,7 +174,7 @@ npm test        # run tests (vitest)
 OMIO_LIVE=1 npx vitest run test/omio.live.test.ts
 ```
 
-Around 250 tests covering SOAP XML parsing, fare response handling, station lookups, delay calculation edge cases, and Uber Travel response parsing against fixtures cut from a sanitized browser capture.
+Around 300 tests covering SOAP XML parsing, fare response handling, station lookups, delay calculation edge cases, and Uber Travel response parsing against fixtures cut from a sanitized browser capture.
 
 ## Darwin Evolution (heads up)
 

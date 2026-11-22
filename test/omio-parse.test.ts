@@ -74,69 +74,72 @@ describe('parseSearchStart', () => {
     expect(() => parseSearchStart(internal, 'SearchJourneys')).toThrow(/Cannot query field upstream/)
   })
 
-  it('calls variables of the wrong shape a schema change, wherever the long message says so', () => {
-    // As answered by the live endpoint to a name sent as a number.
-    const wrongType = {
-      errors: [
-        {
-          message:
-            'Variable "$request" got invalid value 123 at "request.name"; String cannot represent a non string value: 123',
-          extensions: { code: 'BAD_USER_INPUT' },
-        },
-      ],
-    }
-    expect(() => parseSearchStart(wrongType, 'SearchJourneys')).toThrow(OmioSchemaError)
-
-    // The reason can sit far beyond the part of the message that is shown.
-    const longValue = `{ ${'origin: { id: "319585", latitude: 53.35, longitude: -2.88 }, '.repeat(6)}}`
-    const lateReason = {
-      errors: [
-        {
-          message: `Variable "$request" got invalid value ${longValue}; Field "userGeoipCountry" is not defined by type "SearchQuotes__Input".`,
-          extensions: { code: 'BAD_USER_INPUT' },
-        },
-      ],
-    }
-    expect(() => parseSearchStart(lateReason, 'SearchJourneys')).toThrow(OmioSchemaError)
-  })
-
-  it('calls a required variable sent as null a schema change', () => {
-    const body = {
-      errors: [
-        {
-          message: 'Variable "$request" of non-null type "SearchQuotes__Input!" must not be null.',
-          extensions: { code: 'BAD_USER_INPUT' },
-        },
-      ],
-    }
+  // Each error below is what the live endpoint answered to a request whose
+  // variables did not have the shape its schema wants. The server turns such a
+  // request down before running anything, and always names the variable.
+  it.each([
+    [
+      'a number where text is wanted',
+      'Variable "$request" got invalid value 319585 at "request.origin.id"; String cannot represent a non string value: 319585',
+      'BAD_USER_INPUT',
+    ],
+    [
+      'text where a whole number is wanted',
+      'Variable "$request" got invalid value "30" at "request.travelers[0].age"; Int cannot represent non-integer value: "30"',
+      'BAD_USER_INPUT',
+    ],
+    [
+      'a missing required field',
+      'Variable "$request" got invalid value { origin: { id: "319585" } }; Field "currency" of required type "Currency!" was not provided.',
+      'BAD_USER_INPUT',
+    ],
+    [
+      'a field the input type does not have',
+      'Variable "$request" got invalid value { bogus: true }; Field "bogus" is not defined by type "SearchQuotes__Input".',
+      'BAD_USER_INPUT',
+    ],
+    [
+      'text where an object is wanted',
+      'Variable "$request" got invalid value "Liverpool" at "request.origin"; Expected type "LocationQuery__Input" to be an object.',
+      'BAD_USER_INPUT',
+    ],
+    [
+      // The server files this one under its internal-error code, so the code alone cannot be trusted.
+      'nothing where the request is wanted',
+      'Variable "$request" of non-null type "SearchQuotes__Input!" must not be null.',
+      'INTERNAL_SERVER_ERROR',
+    ],
+  ])('calls variables rejected for %s a schema change', (_label, message, code) => {
+    const body = { errors: [{ message, extensions: { code } }] }
     expect(() => parseSearchStart(body, 'SearchJourneys')).toThrow(OmioSchemaError)
   })
 
-  it('is not fooled by wrong-shape wording inside the echoed value', () => {
-    const body = {
-      errors: [
-        {
-          message:
-            'Variable "$request" got invalid value "was not provided" at "request.note"; Expected type "Note". Notes are limited to 10 characters',
-          extensions: { code: 'BAD_USER_INPUT' },
-        },
-      ],
-    }
-    expect(() => parseSearchStart(body, 'SearchJourneys')).not.toThrow(OmioSchemaError)
+  it('calls the codeless "Invalid GraphQL query" reply a schema change', () => {
+    // The live answer to an enum value the schema does not have.
+    const body = { errors: [{ message: 'Invalid GraphQL query', extensions: {} }] }
+    expect(() => parseSearchStart(body, 'SearchJourneys')).toThrow(OmioSchemaError)
   })
 
-  it('reports a variable value the server refuses as the plain error it is', () => {
+  it('does not call a search the server ran and could not finish a schema change', () => {
+    // The live answer to an age of -1, and to a departure time that is not a date.
     const body = {
       errors: [
         {
-          message:
-            'Variable "$request" got invalid value 150 at "request.travelers[0].age"; Expected type "Age". Age must be between 0 and 120',
-          extensions: { code: 'BAD_USER_INPUT' },
+          message: 'Mutation SearchJourneys failed',
+          path: ['SearchJourneys'],
+          extensions: { code: 'INTERNAL_SERVER_ERROR', exception: { message: 'Mutation SearchJourneys failed' } },
         },
       ],
+      data: null,
     }
     expect(() => parseSearchStart(body, 'SearchJourneys')).not.toThrow(OmioSchemaError)
-    expect(() => parseSearchStart(body, 'SearchJourneys')).toThrow(/request\.travelers\[0\]\.age/)
+    expect(() => parseSearchStart(body, 'SearchJourneys')).toThrow(/Mutation SearchJourneys failed/)
+  })
+
+  it('does not call a refusal raised while running the search a schema change', () => {
+    // Not seen live: a server that uses this code for a value it dislikes, without naming a variable.
+    const body = { errors: [{ message: 'Age must be between 0 and 120', extensions: { code: 'BAD_USER_INPUT' } }] }
+    expect(() => parseSearchStart(body, 'SearchJourneys')).not.toThrow(OmioSchemaError)
   })
 
   it('finds a schema error behind another error in the same reply', () => {

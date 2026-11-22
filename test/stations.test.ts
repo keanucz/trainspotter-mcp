@@ -34,7 +34,7 @@ describe('STATIONS map', () => {
 describe('London terminals', () => {
   const londonTerminals: Array<[string, string]> = [
     ['KGX', 'London Kings Cross'],
-    ['STP', 'London St Pancras'],
+    ['STP', 'London St Pancras International'],
     ['PAD', 'London Paddington'],
     ['VIC', 'London Victoria'],
     ['WAT', 'London Waterloo'],
@@ -114,6 +114,10 @@ describe('Codes that used to point at the wrong station', () => {
     ['CAR', 'Carlisle'],
     ['CTR', 'Chester'],
     ['STN', 'Stonehaven'],
+    // Full names, because the Uber Travel search resolves a code by exact name only.
+    ['STP', 'London St Pancras International'],
+    ['SRG', 'Seer Green & Jordans'],
+    ['RAV', 'Ravenglass for Eskdale'],
   ];
 
   it.each(corrected)('should map %s to %s', (crs, name) => {

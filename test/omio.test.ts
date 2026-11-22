@@ -3,10 +3,12 @@ import {
   OMIO_RAILCARDS,
   OmioClient,
   londonWallTimeToUtc,
+  comparableName,
   normalizeFareQuery,
   pickLocation,
 } from '../src/omio.js'
 import { OmioSchemaError, parseLocations } from '../src/omio-parse.js'
+import { STATIONS } from '../src/stations.js'
 import { loadOmioFixture } from './omio-fixtures.js'
 
 type Responder = unknown | ((variables: any) => unknown)
@@ -23,6 +25,8 @@ interface Harness {
   calls: RecordedCall[]
   operations: () => string[]
   elapsed: () => number
+  /** Moves the fake clock forward without any request being made. */
+  advance: (ms: number) => void
 }
 
 const LOCATION_BY_NAME: Record<string, string> = {
@@ -84,6 +88,9 @@ function harness(script: Record<string, Responder[]>, options: { status?: number
     calls,
     operations: () => calls.map((c) => c.operationName),
     elapsed: () => clock,
+    advance: (ms: number) => {
+      clock += ms
+    },
   }
 }
 
@@ -224,14 +231,18 @@ describe('pickLocation', () => {
     expect(pickLocation(city, 'Liverp', 'free')).toMatchObject({ name: 'Liverpool', type: 'location' })
   })
 
-  it('accepts the one station whose name adds a qualifier, for a CRS code', () => {
-    expect(pickLocation(city, 'Liverpool Lime', 'crs')).toMatchObject({
-      name: 'Liverpool Lime Street',
-      type: 'station',
-    })
-    expect(
-      pickLocation([station('London St Pancras International')], 'London St Pancras', 'crs')?.name,
-    ).toBe('London St Pancras International')
+  it('never resolves a CRS code to a station with a longer name, even when it is the only one offered', () => {
+    // WAT is London Waterloo; London Waterloo East (WAE) is a different station.
+    expect(pickLocation([station('London Waterloo East')], 'London Waterloo', 'crs')).toBeNull()
+    // CTR is Chester; Chester-le-Street (CLS) is a different station.
+    expect(pickLocation([station('Chester-le-Street')], 'Chester', 'crs')).toBeNull()
+    expect(pickLocation(city, 'Liverpool Lime', 'crs')).toBeNull()
+    expect(pickLocation([station('London St Pancras International')], 'London St Pancras', 'crs')).toBeNull()
+  })
+
+  it('still finds the exact station among longer-named ones', () => {
+    const candidates = [station('London Waterloo East'), station('London Waterloo')]
+    expect(pickLocation(candidates, 'London Waterloo', 'crs')?.name).toBe('London Waterloo')
   })
 
   it('never resolves a CRS code to a station with a shorter name', () => {
@@ -239,7 +250,7 @@ describe('pickLocation', () => {
     expect(pickLocation([station('London Waterloo')], 'London Waterloo East', 'crs')).toBeNull()
   })
 
-  it('refuses to choose between several longer-named stations for a CRS code', () => {
+  it('refuses longer-named stations for a CRS code when there are several', () => {
     const candidates = [station('Edinburgh Park'), station('Edinburgh Gateway')]
     expect(pickLocation(candidates, 'Edinburgh', 'crs')).toBeNull()
     expect(pickLocation(city, 'Liverpool', 'crs')).toBeNull()
@@ -265,6 +276,23 @@ describe('pickLocation', () => {
   it('returns null for no results', () => {
     expect(pickLocation([], 'Nowhere', 'free')).toBeNull()
   })
+
+  it('can tell every station in the table apart by name', () => {
+    // A code resolves by comparing names in this reduced form, so two stations
+    // that reduced to the same words could be mistaken for each other.
+    const codesByName = new Map<string, string[]>()
+    for (const [code, name] of STATIONS) {
+      const key = comparableName(name)
+      codesByName.set(key, [...(codesByName.get(key) ?? []), code])
+    }
+    const clashes = [...codesByName.entries()].filter(([, codes]) => codes.length > 1)
+    expect(clashes).toEqual([])
+  })
+
+  it('keeps a bracketed qualifier as part of the name', () => {
+    expect(comparableName('Newport (South Wales)')).not.toBe(comparableName('Newport (Essex)'))
+    expect(pickLocation([station('Newport (Essex)')], 'Newport (South Wales)', 'crs')).toBeNull()
+  })
 })
 
 describe('OmioClient.searchLocations', () => {
@@ -288,6 +316,38 @@ describe('OmioClient.searchLocations', () => {
     await h.client.searchLocations('London Euston')
     await h.client.searchLocations('  london euston ')
     expect(h.calls).toHaveLength(1)
+  })
+
+  it.each([
+    ['Harrow & Wealdstone', ['Harrow & Wealdstone', 'Harrow'], 'Harrow'],
+    ['Shepherds Bush', ['Shepherds Bush', "Shepherd's Bush"], "Shepherd's Bush"],
+    ['Christ\u2019s Hospital', ['Christ\u2019s Hospital', "Christ's Hospital", 'Christs Hospital'], 'Christs Hospital'],
+  ])('finds "%s" for omio_locations by trying the spellings a fare search would', async (query, asked, answered) => {
+    const h = harness({
+      SearchLocation: [
+        (variables: any) =>
+          loadOmioFixture(variables.request.name === answered ? 'search-location-station' : 'search-location-empty'),
+      ],
+    })
+    const locations = await h.client.searchLocations(query)
+    expect(h.calls.map((c) => c.variables.request.name)).toEqual(asked)
+    expect(locations).toHaveLength(1)
+    // Asked again, the search also says which spelling the answer belongs to.
+    expect(await h.client.findLocations(query)).toMatchObject({ answeredBy: answered, tried: asked })
+  })
+
+  it('asks at most three times for omio_locations about a name nothing is known for', async () => {
+    const h = harness({ SearchLocation: [loadOmioFixture('search-location-empty')] })
+    expect(await h.client.findLocations('Bishops Nowhere & Kings Nothing')).toEqual({
+      locations: [],
+      answeredBy: 'Bishops Nowhere & Kings Nothing',
+      tried: ['Bishops Nowhere & Kings Nothing', 'Bishops Nowhere', "Bishop's Nowhere"],
+    })
+    expect(h.calls.map((c) => c.variables.request.name)).toEqual([
+      'Bishops Nowhere & Kings Nothing',
+      'Bishops Nowhere',
+      "Bishop's Nowhere",
+    ])
   })
 
   it('rejects an empty query without calling the API', async () => {
@@ -744,22 +804,131 @@ describe('OmioClient.searchFares', () => {
     expect(result.origin).toMatchObject({ name: 'Liverpool', type: 'location' })
   })
 
-  it('tries at most two possessive spellings', async () => {
+  it('spends one extra request at most on a possessive spelling', async () => {
     const h = harness(standardScript())
     await expect(h.client.searchFares({ ...BASE_QUERY, from: 'Bishops Abbots Kings' })).rejects.toThrow(
       /No Uber Travel location found/,
     )
     const lookups = h.calls.filter((c) => c.operationName === 'SearchLocation').map((c) => c.variables.request.name)
-    expect(lookups).toEqual(['Bishops Abbots Kings', "Bishop's Abbots Kings", "Bishops Abbot's Kings"])
+    expect(lookups).toEqual(['Bishops Abbots Kings', "Bishop's Abbots Kings"])
   })
 
-  it('does not treat a word ending in a double s as a possessive, in any letter case', async () => {
+  it('does not treat a word ending in a double s as a possessive', async () => {
     const h = harness(standardScript())
-    await expect(h.client.searchFares({ ...BASE_QUERY, from: 'BISHOPS CROSS' })).rejects.toThrow(
+    await expect(h.client.searchFares({ ...BASE_QUERY, from: 'Nowhere Cross' })).rejects.toThrow(
       /No Uber Travel location found/,
     )
     const lookups = h.calls.filter((c) => c.operationName === 'SearchLocation').map((c) => c.variables.request.name)
-    expect(lookups).toEqual(['BISHOPS CROSS', "BISHOP's CROSS"])
+    expect(lookups).toEqual(['Nowhere Cross'])
+  })
+
+  it('finds a possessive in capital letters too', async () => {
+    const h = harness(standardScript())
+    await expect(h.client.searchFares({ ...BASE_QUERY, from: 'NOWHERE BISHOPS' })).rejects.toThrow(
+      /No Uber Travel location found/,
+    )
+    const lookups = h.calls.filter((c) => c.operationName === 'SearchLocation').map((c) => c.variables.request.name)
+    expect(lookups).toEqual(['NOWHERE BISHOPS', "NOWHERE BISHOP's"])
+  })
+
+  it('does not look a name that found nothing up again for a minute', async () => {
+    const h = harness(standardScript())
+    const search = () => h.client.searchFares({ ...BASE_QUERY, from: 'Atlantis' }).catch(() => undefined)
+    await search()
+    const afterFirst = h.calls.length
+    expect(afterFirst).toBe(2) // as given, then the one possessive spelling
+
+    h.advance(50 * 1000)
+    await search()
+    expect(h.calls).toHaveLength(afterFirst)
+
+    h.advance(20 * 1000)
+    await search()
+    expect(h.calls).toHaveLength(afterFirst * 2)
+  })
+
+  it('asks again for omio_locations about a name a fare search just remembered as unknown', async () => {
+    const h = harness(standardScript())
+    await h.client.searchFares({ ...BASE_QUERY, from: 'Atlantis' }).catch(() => undefined)
+    const before = h.calls.length
+    expect(await h.client.searchLocations('Atlantis')).toEqual([])
+    // As given, then the one possessive spelling: both asked again, neither taken from memory.
+    expect(h.calls.slice(before).map((c) => c.variables.request.name)).toEqual(['Atlantis', "Atlanti's"])
+  })
+
+  it('does not let an empty omio_locations reply hide a place from the next fare search', async () => {
+    const known = loadOmioFixture('search-location-station')
+    known.data.SearchLocation.locations[0].name = 'Atlantis'
+    const h = harness({
+      ...standardScript(),
+      // Empty once (a passing fault), known from then on.
+      SearchLocation: [
+        loadOmioFixture('search-location-empty'),
+        (variables: any) => (variables.request.name === 'Atlantis' ? known : locationResponder(variables)),
+      ],
+    })
+    expect(await h.client.searchLocations('Atlantis')).toEqual([])
+    const result = await h.client.searchFares({ ...BASE_QUERY, from: 'Atlantis' })
+    expect(result.origin.name).toBe('Atlantis')
+  })
+
+  it('prefers a known result over a remembered unknown', async () => {
+    const known = loadOmioFixture('search-location-station')
+    known.data.SearchLocation.locations[0].name = 'Atlantis'
+    const h = harness({
+      ...standardScript(),
+      // Unknown on the first two lookups (as given, possessive), known from then on.
+      SearchLocation: [
+        loadOmioFixture('search-location-empty'),
+        loadOmioFixture('search-location-empty'),
+        (variables: any) => (variables.request.name === 'Atlantis' ? known : locationResponder(variables)),
+      ],
+    })
+    await h.client.searchFares({ ...BASE_QUERY, from: 'Atlantis' }).catch(() => undefined)
+    expect(await h.client.searchLocations('Atlantis')).toHaveLength(1)
+    const result = await h.client.searchFares({ ...BASE_QUERY, from: 'Atlantis' })
+    expect(result.origin.name).toBe('Atlantis')
+  })
+
+  it('does not let a run of unknown names push known places out of the cache', async () => {
+    const h = harness(standardScript())
+    await h.client.searchLocations('London Euston')
+    for (let index = 0; index < 60; index++) {
+      await h.client.searchFares({ ...BASE_QUERY, from: `Nowhere${index}` }).catch(() => undefined)
+    }
+    const before = h.calls.length
+    await h.client.searchLocations('London Euston')
+    expect(h.calls).toHaveLength(before)
+  })
+
+  it('takes the fallback suggestion from the name as typed when that search answered', async () => {
+    const stripped = loadOmioFixture('search-location-station') // Liverpool South Parkway
+    const h = harness({
+      ...standardScript(),
+      SearchLocation: [
+        (variables: any) =>
+          variables.request.name === "King's Nowhere"
+            ? loadOmioFixture('search-location-city') // first suggestion: Liverpool
+            : variables.request.name === 'Kings Nowhere'
+              ? stripped
+              : locationResponder(variables),
+      ],
+    })
+    const result = await h.client.searchFares({ ...BASE_QUERY, from: "King's Nowhere" })
+    expect(result.origin).toMatchObject({ name: 'Liverpool', type: 'location' })
+  })
+
+  it('takes the fallback suggestion from the spelling without the apostrophe when the typed one found nothing', async () => {
+    const stripped = loadOmioFixture('search-location-station')
+    stripped.data.SearchLocation.locations[0].name = 'Kings Norton'
+    const h = harness({
+      ...standardScript(),
+      SearchLocation: [
+        (variables: any) => (variables.request.name === 'Kings Nowhere' ? stripped : locationResponder(variables)),
+      ],
+    })
+    const result = await h.client.searchFares({ ...BASE_QUERY, from: "King's Nowhere" })
+    expect(result.origin.name).toBe('Kings Norton')
   })
 
   it('takes only a proper match from a possessive spelling, never its first suggestion', async () => {
@@ -818,6 +987,52 @@ describe('OmioClient.searchFares', () => {
       /No Uber Travel location found for "Liverpool & Nowhere"/,
     )
     expect(h.operations()).not.toContain('SearchJourneys')
+  })
+
+  it('refuses a station code when only a longer-named station comes back', async () => {
+    // WAT is London Waterloo. If the exact station were missing from the reply,
+    // London Waterloo East must not be taken in its place.
+    const east = loadOmioFixture('search-location-euston')
+    east.data.SearchLocation.locations[0].name = 'London Waterloo East'
+    const h = harness({ ...standardScript(), SearchLocation: [east] })
+    await expect(h.client.searchFares({ ...BASE_QUERY, from: 'WAT' })).rejects.toThrow(
+      /No Uber Travel location found for "WAT" \(London Waterloo\).*Uber Travel offers: London Waterloo East\./,
+    )
+    expect(h.operations()).not.toContain('SearchJourneys')
+  })
+
+  // These three were once listed under a shortened name. A code resolves by exact
+  // name only, so each needs the full name the location search stores.
+  it.each([
+    ['STP', 'London St Pancras International', 'London St Pancras International'],
+    ['SRG', 'Seer Green', 'Seer Green & Jordans'],
+    ['RAV', 'Ravenglass for Eskdale', 'Ravenglass for Eskdale'],
+  ])('resolves %s by searching "%s" and matching "%s" exactly', async (code, term, storedName) => {
+    const stored = loadOmioFixture('search-location-station')
+    stored.data.SearchLocation.locations[0].name = storedName
+    stored.data.SearchLocation.locations[0].id = '321'
+    const h = harness({
+      ...standardScript(),
+      SearchLocation: [(variables: any) => (variables.request.name === term ? stored : locationResponder(variables))],
+    })
+    const result = await h.client.searchFares({ ...BASE_QUERY, from: code })
+    expect(h.calls[0]?.variables.request.name).toBe(term)
+    expect(result.origin).toMatchObject({ id: '321', name: storedName })
+  })
+
+  it('sends a curly apostrophe as a plain one', async () => {
+    const stored = loadOmioFixture('search-location-station')
+    stored.data.SearchLocation.locations[0].name = "Shepherd's Bush"
+    stored.data.SearchLocation.locations[0].id = '654'
+    const h = harness({
+      ...standardScript(),
+      SearchLocation: [
+        (variables: any) => (variables.request.name === "Shepherd's Bush" ? stored : locationResponder(variables)),
+      ],
+    })
+    const result = await h.client.searchFares({ ...BASE_QUERY, from: 'Shepherd\u2019s Bush' })
+    expect(h.calls[0]?.variables.request.name).toBe("Shepherd's Bush")
+    expect(result.origin.id).toBe('654')
   })
 
   it('rejects a search from a place to itself', async () => {
@@ -880,6 +1095,69 @@ describe('OmioClient.searchFares', () => {
     const failure = await h.client.searchFares(BASE_QUERY).catch((thrown: unknown) => thrown)
     expect(failure).toBeInstanceOf(OmioSchemaError)
     expect((failure as Error).message).toContain(error.message.slice(0, 40))
+  })
+
+  // The first two are live replies to requests the server turned down before
+  // running them. Their wording is recognised by itself (see omio-parse.test.ts),
+  // so they would pass without the status rule. The third is made up: nothing but
+  // the HTTP status marks it, so it is the one that proves that rule.
+  it.each([
+    ['an enum value the schema lacks', { message: 'Invalid GraphQL query', extensions: {} }],
+    [
+      'a missing request, filed under the internal-error code',
+      {
+        message: 'Variable "$request" of non-null type "SearchQuotes__Input!" must not be null.',
+        locations: [{ line: 1, column: 25 }],
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
+      },
+    ],
+    ['a rejection worded in a way never seen before', { message: 'Request refused', extensions: { code: 'NEW_CODE' } }],
+  ])('treats an HTTP 400 for %s as a schema change', async (_label, error) => {
+    const body = JSON.stringify({ errors: [error] })
+    const h = harness({ ...standardScript(), SearchJourneys: [new Response(body, { status: 400 })] })
+    const failure = await h.client.searchFares(BASE_QUERY).catch((thrown: unknown) => thrown)
+    expect(failure).toBeInstanceOf(OmioSchemaError)
+    expect((failure as Error).message).toContain(error.message.slice(0, 30))
+  })
+
+  it('goes by the HTTP status for a turned-down location lookup and a turned-down poll too', async () => {
+    const refused = (): Response =>
+      new Response(JSON.stringify({ errors: [{ message: 'Request refused', extensions: { code: 'NEW_CODE' } }] }), {
+        status: 400,
+      })
+
+    const lookup = harness({ ...standardScript(), SearchLocation: [refused()] })
+    const lookupFailure = await lookup.client.searchLocations('Leeds').catch((thrown: unknown) => thrown)
+    expect(lookupFailure).toBeInstanceOf(OmioSchemaError)
+    expect((lookupFailure as Error).message).toMatch(/turned the request down.*SearchLocation: Request refused/)
+
+    const poll = harness({ ...standardScript(), GetSearchWithoutQuotes: [refused()] })
+    const pollFailure = await poll.client.searchFares(BASE_QUERY).catch((thrown: unknown) => thrown)
+    expect(pollFailure).toBeInstanceOf(OmioSchemaError)
+    expect((pollFailure as Error).message).toMatch(/GetSearchWithoutQuotes: Request refused/)
+  })
+
+  it('words a turned-down request differently from a reply of the wrong shape', async () => {
+    const turnedDown = harness({
+      ...standardScript(),
+      SearchJourneys: [{ errors: [{ message: 'Cannot query field "searchId" on type "Booking".' }] }],
+    })
+    await expect(turnedDown.client.searchFares(BASE_QUERY)).rejects.toThrow(
+      /turned the request down before running it \(SearchJourneys: Cannot query field/,
+    )
+
+    const wrongShape = harness({
+      ...standardScript(),
+      GetSearchWithoutQuotes: [{ data: { GetSearchWithoutQuotes: { booking: { status: 'SEARCH_STATUS_DONE' } } } }],
+    })
+    await expect(wrongShape.client.searchFares(BASE_QUERY)).rejects.toThrow(/did not match the expected shape/)
+  })
+
+  it('reports an HTTP 400 that is not a GraphQL reply as a plain failure', async () => {
+    const h = harness({ ...standardScript(), SearchJourneys: [new Response('Bad Request', { status: 400 })] })
+    const failure = await h.client.searchFares(BASE_QUERY).catch((thrown: unknown) => thrown)
+    expect(failure).not.toBeInstanceOf(OmioSchemaError)
+    expect((failure as Error).message).toBe('Uber Travel request failed (400) for SearchJourneys: Bad Request')
   })
 
   it('reports an internal server error with its message, not as a schema change', async () => {

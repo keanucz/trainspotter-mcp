@@ -1,7 +1,7 @@
 // Text output for the Uber Travel (Omio-backed) tools.
 
 import type { OmioJourney, OmioLocation } from './omio-parse.js';
-import { OMIO_RAILCARDS, type OmioFareResult } from './omio.js';
+import { OMIO_RAILCARDS, comparableName, type OmioFareResult } from './omio.js';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -140,12 +140,30 @@ export function formatOmioFares(result: OmioFareResult, options: OmioFormatOptio
   return [...header, ...body, ...footer].filter((line): line is string => line !== null).join('\n');
 }
 
-export function formatOmioLocations(query: string, locations: readonly OmioLocation[]): string {
+/**
+ * `search` says which spelling of the query the locations belong to. A
+ * spelling that is the same name (it differs only in case, apostrophes or
+ * punctuation) keeps the plain heading. A shortened one does not: its list
+ * shares a first word or two with the query without having matched it, and
+ * the heading says so.
+ */
+export function formatOmioLocations(
+  query: string,
+  locations: readonly OmioLocation[],
+  search: { answeredBy: string; tried: readonly string[] } = { answeredBy: query, tried: [query] },
+): string {
+  const sameText = (a: string, b: string): boolean => a.trim().toLowerCase() === b.trim().toLowerCase();
   if (locations.length === 0) {
-    return `No Uber Travel locations match "${query}". Try a shorter or differently spelled name.`;
+    const others = search.tried.filter((term) => !sameText(term, query)).map((term) => `"${term}"`);
+    const alsoTried = others.length > 0 ? ` (also tried ${others.join(' and ')})` : '';
+    return `No Uber Travel locations match "${query}"${alsoTried}. Try a shorter or differently spelled name.`;
   }
+  const heading =
+    comparableName(search.answeredBy) === comparableName(query)
+      ? `Uber Travel locations matching "${query}":`
+      : `No Uber Travel locations match "${query}". Showing what "${search.answeredBy}" finds instead:`;
   return [
-    `Uber Travel locations matching "${query}":`,
+    heading,
     '',
     ...locations.map(
       (location) => `${location.name} | ${location.type} | ${location.countryCode} | id ${location.id}`,

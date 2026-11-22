@@ -181,7 +181,42 @@ describe('formatOmioLocations', () => {
   })
 
   it('says when nothing matched', () => {
-    expect(formatOmioLocations('Atlantis', [])).toContain('No Uber Travel locations match "Atlantis"')
+    expect(formatOmioLocations('Atlantis', [])).toBe(
+      'No Uber Travel locations match "Atlantis". Try a shorter or differently spelled name.',
+    )
+  })
+
+  it('names the other spellings that were tried when nothing matched', () => {
+    const text = formatOmioLocations('Bishops Nowhere & Nothing', [], {
+      answeredBy: 'Bishops Nowhere & Nothing',
+      tried: ['Bishops Nowhere & Nothing', 'Bishops Nowhere', "Bishop's Nowhere"],
+    })
+    expect(text).toBe(
+      'No Uber Travel locations match "Bishops Nowhere & Nothing" (also tried "Bishops Nowhere" and "Bishop\'s Nowhere"). Try a shorter or differently spelled name.',
+    )
+  })
+
+  it('does not present the results of another spelling as matches for the query', () => {
+    const locations = parseLocations(loadOmioFixture('search-location-city'))
+    const text = formatOmioLocations('Liverpool & Nowhere', locations, {
+      answeredBy: 'Liverpool',
+      tried: ['Liverpool & Nowhere', 'Liverpool'],
+    })
+    expect(text.split('\n')[0]).toBe(
+      'No Uber Travel locations match "Liverpool & Nowhere". Showing what "Liverpool" finds instead:',
+    )
+    expect(text).not.toContain('locations matching "Liverpool & Nowhere"')
+    expect(text).toContain('Liverpool Lime Street | station | GB')
+  })
+
+  it.each([
+    ['letter case', 'liverpool', 'Liverpool'],
+    ['a missing apostrophe', 'Shepherds Bush', "Shepherd's Bush"],
+    ['an extra apostrophe', 'Christ\u2019s Hospital', 'Christs Hospital'],
+  ])('keeps the plain heading when the answering spelling differs only by %s', (_label, query, answeredBy) => {
+    const locations = parseLocations(loadOmioFixture('search-location-city'))
+    const text = formatOmioLocations(query, locations, { answeredBy, tried: [query, answeredBy] })
+    expect(text.split('\n')[0]).toBe(`Uber Travel locations matching "${query}":`)
   })
 })
 
@@ -226,6 +261,16 @@ describe('omio tools', () => {
 
   it('runs a location search', async () => {
     const result = await handleOmioTool('omio_locations', { query: 'Liverpool' }, fixtureClient())
+    expect(textOf(result)).toContain('Uber Travel locations matching "Liverpool":')
+    expect(textOf(result)).toContain('Liverpool Lime Street | station')
+  })
+
+  it('says so when a location search only found something under another spelling', async () => {
+    const result = await handleOmioTool('omio_locations', { query: 'Liverpool & Nowhere' }, fixtureClient())
+    expect(result.isError).toBeUndefined()
+    expect(textOf(result)).toContain(
+      'No Uber Travel locations match "Liverpool & Nowhere". Showing what "Liverpool" finds instead:',
+    )
     expect(textOf(result)).toContain('Liverpool Lime Street | station')
   })
 

@@ -152,7 +152,8 @@ export async function handleOmioTool(
     }
     if (name === LOCATIONS_TOOL) {
       const query = requireString(args, 'query');
-      return textResult(formatOmioLocations(query, await client.searchLocations(query)));
+      const search = await client.findLocations(query);
+      return textResult(formatOmioLocations(query, search.locations, search));
     }
     return textResult(`Unknown tool: ${name}`, true);
   } catch (error) {

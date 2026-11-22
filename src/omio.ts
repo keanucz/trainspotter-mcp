@@ -32,6 +32,12 @@ const CSRF_PLACEHOLDER = 'x';
 
 const REQUEST_TIMEOUT_MS = 10_000;
 const MAX_ERROR_DETAIL_LENGTH = 200;
+const HTTP_BAD_REQUEST = 400;
+// An empty location reply is remembered for a moment, so a search that is
+// retried straight away does not look a name that does not exist up again.
+// Kept short, because an empty reply may also be a passing fault on the
+// server's side. omio_locations neither reads nor writes this memory.
+const EMPTY_LOCATION_CACHE_TTL_MS = 60 * 1000;
 const POLL_INTERVAL_MS = 1_000;
 const POLL_CAP_MS = 20_000;
 const TOTAL_BUDGET_MS = 35_000;
@@ -80,7 +86,6 @@ export const OMIO_RAILCARDS: Readonly<Record<string, string>> = {
   JCP: 'Jobcentre Plus Travel Discount Card',
 };
 
-const MAX_POSSESSIVE_TERMS = 2;
 // A word that may be a possessive written without its apostrophe ("Shepherds"),
 // but not one that merely ends in a double s ("Cross").
 const POSSESSIVE_CANDIDATE_PATTERN = /^[a-z]{2,}[^s']s$/i;
@@ -132,6 +137,14 @@ export interface OmioFareResult extends NormalizedFareQuery {
   notes: string[];
   disclaimers: string[];
   cached: boolean;
+}
+
+export interface OmioLocationSearch {
+  locations: OmioLocation[];
+  /** The text whose lookup gave these locations: the query, or another spelling of it. The query itself when nothing was found. */
+  answeredBy: string;
+  /** Every text that was looked up, in order, starting with the query. */
+  tried: string[];
 }
 
 export interface OmioClientOptions {
@@ -294,32 +307,33 @@ function nameWords(name: string): string[] {
  * Results are still matched against the full name.
  */
 export function locationSearchTerms(name: string): string[] {
-  const firstPart = (name.split(/\s+(?:&|and)\s+/i)[0] ?? name).trim();
-  const asWritten = firstPart === '' ? name : firstPart;
-  const withoutApostrophes = asWritten.replace(/['’]/g, '');
+  // Stored names use the plain apostrophe, so a curly one from a phone keyboard is sent as that.
+  const plain = name.replace(/’/g, "'");
+  const firstPart = (plain.split(/\s+(?:&|and)\s+/i)[0] ?? plain).trim();
+  const asWritten = firstPart === '' ? plain : firstPart;
+  const withoutApostrophes = asWritten.replace(/'/g, '');
   return withoutApostrophes === asWritten ? [asWritten] : [asWritten, withoutApostrophes];
 }
 
-function comparableName(name: string): string {
+/** A name reduced to its words: lower case, no punctuation, "&" read as "and". */
+export function comparableName(name: string): string {
   return nameWords(name).join(' ');
 }
 
 /**
- * Spellings of a search term with an apostrophe put back, for a name typed or
- * listed without one ("Shepherds Bush" is stored as "Shepherd's Bush", and the
- * search needs the apostrophe). One word is changed per spelling, and only a
- * few are offered, because each one costs a request.
+ * A search term with an apostrophe put back, for a name typed or listed
+ * without one ("Shepherds Bush" is stored as "Shepherd's Bush", and the search
+ * needs the apostrophe). Trying a spelling costs a request, so only one is
+ * offered: the first word that could be a possessive. Null when the term has
+ * an apostrophe already or no such word.
  */
-export function possessiveSearchTerms(term: string): string[] {
-  if (/['’]/.test(term)) return [];
+export function possessiveSearchTerm(term: string): string | null {
+  if (/['’]/.test(term)) return null;
   const words = term.split(/\s+/);
-  return words
-    .flatMap((word, index) =>
-      POSSESSIVE_CANDIDATE_PATTERN.test(word)
-        ? [[...words.slice(0, index), `${word.slice(0, -1)}'s`, ...words.slice(index + 1)].join(' ')]
-        : [],
-    )
-    .slice(0, MAX_POSSESSIVE_TERMS);
+  const index = words.findIndex((word) => POSSESSIVE_CANDIDATE_PATTERN.test(word));
+  const word = index === -1 ? undefined : words[index];
+  if (word === undefined) return null;
+  return [...words.slice(0, index), `${word.slice(0, -1)}'s`, ...words.slice(index + 1)].join(' ');
 }
 
 /**
@@ -334,11 +348,10 @@ export type LocationMatch = 'crs' | 'exact' | 'free';
  * Chooses the location to search from a SearchLocation result.
  *
  * A CRS code must never silently turn into some other station, so for `crs`
- * only a British rail station is accepted: one with exactly the station's
- * name, or failing that the single station whose name is that name plus a
- * qualifier ("London St Pancras" to "London St Pancras International"). A
- * shorter name is never accepted ("London Waterloo East" is not "London
- * Waterloo"), and neither is a choice between several longer ones.
+ * only a British rail station with exactly the station's name is accepted.
+ * A longer name is not ("London Waterloo East" is a different station from
+ * "London Waterloo"), and neither is a shorter one. The station table
+ * therefore has to carry each station's full name.
  *
  * For `free` text an exact name wins, otherwise the API's own first suggestion
  * is used, which is what the website's autocomplete would offer.
@@ -357,10 +370,7 @@ export function pickLocation(
   const exactStation = stations.find(isExact);
   if (exactStation) return exactStation;
 
-  if (match === 'crs') {
-    const qualified = stations.filter((location) => comparableName(location.name).startsWith(`${wanted} `));
-    return qualified.length === 1 ? (qualified[0] ?? null) : null;
-  }
+  if (match === 'crs') return null;
 
   const exactPlace = locations.find(isExact);
   if (exactPlace) return exactPlace;
@@ -372,6 +382,7 @@ export class OmioClient {
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly now: () => number;
   private readonly locationCache = new Map<string, CacheEntry<OmioLocation[]>>();
+  private readonly emptyLocationCache = new Map<string, CacheEntry<true>>();
   private readonly searchCache = new Map<string, CacheEntry<OmioFareResult>>();
   private queue: Promise<unknown> = Promise.resolve();
 
@@ -382,11 +393,34 @@ export class OmioClient {
   }
 
   async searchLocations(query: string): Promise<OmioLocation[]> {
+    return (await this.findLocations(query)).locations;
+  }
+
+  /** Like searchLocations, and also says which spelling of the query the result belongs to. */
+  async findLocations(query: string): Promise<OmioLocationSearch> {
     const name = (query ?? '').trim();
     if (name === '') {
       throw new Error('A location query is required');
     }
-    return this.runExclusive(() => this.lookupLocations(name));
+    // The query is asked as given first. If the search knows nothing, the same
+    // spellings a fare search would try are asked, so that a name copied from an
+    // error ("Harrow & Wealdstone") or typed without its apostrophe still finds
+    // something. A remembered "nothing" is not good enough for the tool whose
+    // job is to say what the service knows, and its own empty replies are not
+    // remembered.
+    return this.runExclusive(async () => {
+      const spellings = locationSearchTerms(name);
+      const guess = possessiveSearchTerm(spellings[0] ?? name);
+      const terms = [name, ...spellings, ...(guess === null ? [] : [guess])];
+      const distinct = terms.filter(
+        (term, index) => terms.findIndex((other) => other.toLowerCase() === term.toLowerCase()) === index,
+      );
+      for (const [index, term] of distinct.entries()) {
+        const locations = await this.lookupLocations(term, { rememberEmpty: false });
+        if (locations.length > 0) return { locations, answeredBy: term, tried: distinct.slice(0, index + 1) };
+      }
+      return { locations: [], answeredBy: name, tried: distinct };
+    });
   }
 
   async searchFares(query: OmioFareQuery): Promise<OmioFareResult> {
@@ -417,10 +451,16 @@ export class OmioClient {
     return run;
   }
 
-  private async lookupLocations(name: string): Promise<OmioLocation[]> {
+  private async lookupLocations(
+    name: string,
+    options: { rememberEmpty: boolean } = { rememberEmpty: true },
+  ): Promise<OmioLocation[]> {
+    // The live search ignores letter case ("LONDON EUSTON" finds London Euston), so the key can too.
     const cacheKey = name.toLowerCase();
+    // A known result is read first, so it always wins over a remembered "nothing".
     const cached = this.readCache(this.locationCache, cacheKey);
     if (cached) return cached;
+    if (options.rememberEmpty && this.readCache(this.emptyLocationCache, cacheKey)) return [];
 
     const body = await this.post('SearchLocation', SEARCH_LOCATION_QUERY, {
       request: { name, locale: 'en-GB' },
@@ -428,6 +468,9 @@ export class OmioClient {
     const locations = parseLocations(body);
     if (locations.length > 0) {
       this.writeCache(this.locationCache, cacheKey, locations, LOCATION_CACHE_TTL_MS);
+    } else if (options.rememberEmpty) {
+      // Kept apart from real results, so a run of unknown names cannot push those out.
+      this.writeCache(this.emptyLocationCache, cacheKey, true, EMPTY_LOCATION_CACHE_TTL_MS);
     }
     return locations;
   }
@@ -471,10 +514,12 @@ export class OmioClient {
     const asGiven = await this.lookupFirstMatch(terms, name, strict);
     // A search that knew nothing at all is what a missing apostrophe looks
     // like. Those spellings are a guess, so only a proper match is taken from them.
+    const searchKnewNothing = !asGiven.picked && asGiven.seen.length === 0;
+    const possessiveGuess = searchKnewNothing ? possessiveSearchTerm(terms[0] ?? name) : null;
     const possessive =
-      !asGiven.picked && asGiven.seen.length === 0
-        ? await this.lookupFirstMatch(possessiveSearchTerms(terms[0] ?? name), name, strict)
-        : { picked: null, seen: [] };
+      possessiveGuess === null
+        ? { picked: null, seen: [] }
+        : await this.lookupFirstMatch([possessiveGuess], name, strict);
     const picked =
       asGiven.picked ?? possessive.picked ?? (match === 'free' ? (asGiven.seen[0] ?? null) : null);
     if (!picked) {
@@ -710,11 +755,14 @@ export class OmioClient {
     }
     const body = parseJson(text);
     if (!response.ok) {
-      // The server answers a query that no longer fits the schema with HTTP 400
-      // and a GraphQL error list, and its own failures with HTTP 500 and the same.
+      // The server turns down a request that does not fit its schema with HTTP
+      // 400 and a GraphQL error list, before running anything. A search it ran
+      // and could not finish comes back as HTTP 500 with the same kind of list.
+      // The status is the server's own verdict, so a 400 with such a list counts
+      // as a schema change even when its wording is new.
       const failure = readGraphqlFailure(body);
-      if (failure?.schemaChange) {
-        throw new OmioSchemaError(`${operationName} was rejected: ${failure.message}`);
+      if (failure && (failure.schemaChange || response.status === HTTP_BAD_REQUEST)) {
+        throw new OmioSchemaError(`${operationName}: ${failure.message}`, 'request');
       }
       const detail = (failure?.message ?? text).slice(0, MAX_ERROR_DETAIL_LENGTH);
       throw new Error(`Uber Travel request failed (${response.status}) for ${operationName}: ${detail}`);
@@ -737,6 +785,8 @@ export class OmioClient {
 
   private writeCache<T>(cache: Map<string, CacheEntry<T>>, key: string, value: T, ttlMs: number): void {
     cache.delete(key);
+    // Every entry of one cache lives equally long, so the oldest is also the
+    // first to go out of date and the right one to drop.
     if (cache.size >= MAX_CACHE_ENTRIES) {
       const oldest = cache.keys().next().value;
       if (oldest !== undefined) cache.delete(oldest);

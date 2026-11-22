@@ -4,10 +4,17 @@
 // narrowed field by field. Anything unexpected raises OmioSchemaError with the
 // path that failed, so a schema change upstream is obvious instead of silent.
 
+/**
+ * The API no longer works the way this code expects: either a reply had an
+ * unexpected shape (`response`), or the server turned our request down before
+ * running it (`request`).
+ */
 export class OmioSchemaError extends Error {
-  constructor(detail: string) {
+  constructor(detail: string, kind: 'response' | 'request' = 'response') {
     super(
-      `Uber Travel response did not match the expected shape (${detail}). ` +
+      (kind === 'request'
+        ? `Uber Travel turned the request down before running it (${detail}). `
+        : `Uber Travel response did not match the expected shape (${detail}). `) +
         'This is an undocumented API and it has probably changed; the omio tools need updating.',
     );
     this.name = 'OmioSchemaError';
@@ -143,25 +150,20 @@ const SCHEMA_ERROR_CODES: ReadonlySet<string> = new Set([
   'PERSISTED_QUERY_NOT_FOUND',
   'PERSISTED_QUERY_NOT_SUPPORTED',
 ]);
-// The server uses this code both for variables that no longer have the shape
-// the input type wants (a schema change, since this code builds them) and for
-// a value it refuses. Both name the variable; only the first kind uses one of
-// the fixed phrases GraphQL has for a wrong shape: an unknown field, a missing
-// required field, an unknown enum value, or a value of the wrong type.
-const BAD_INPUT_CODE = 'BAD_USER_INPUT';
-const VARIABLE_MISMATCH_PATTERN = /^Variable "\$/;
-const VARIABLE_SHAPE_PATTERN =
-  /is not defined by type|was not provided|does not exist in "[^"]*" enum|cannot represent|to be an object|not to be null|must not be null/;
-
-/**
- * The part of a variable error that gives the reason. The message first echoes
- * the rejected value ("... got invalid value { ... } at "path"; <reason>"), and
- * the echo must not be searched: it is our own data and could contain anything.
- */
-function variableErrorReason(message: string): string {
-  const separator = message.lastIndexOf('; ');
-  return separator === -1 ? message : message.slice(separator + 2);
-}
+// How the live endpoint treats a bad SearchJourneys request (probed with one
+// broken request per case):
+// - Variables of the wrong shape (wrong type, missing or unknown field, null)
+//   are turned down before anything runs. The message always starts with
+//   `Variable "$`. The code is usually BAD_USER_INPUT but not always, so the
+//   message start is what counts, not the code.
+// - An enum value the schema lacks gets a codeless "Invalid GraphQL query".
+// - A value it dislikes (age -1, a departure time that is not a date) is not
+//   turned down like that: the search runs and fails as INTERNAL_SERVER_ERROR.
+//   Odd but well-formed values (age 500, a past date) are simply accepted.
+// This code builds every variable itself and checks the caller's values first,
+// so a request turned down before running means the schema moved.
+const VARIABLE_REJECTED_PATTERN = /^Variable "\$/;
+const INVALID_QUERY_PATTERN = /^\s*Invalid GraphQL query\b/i;
 // Fallback for a reply with no error code: the wording GraphQL servers use
 // when a query no longer fits their schema.
 const GRAPHQL_VALIDATION_PATTERN =
@@ -176,22 +178,20 @@ export interface GraphqlFailure {
 
 function describeGraphqlError(raw: unknown): GraphqlFailure {
   const error = raw !== null && typeof raw === 'object' ? (raw as Json) : {};
-  // Classify before shortening: the reason can come after a long echo of the
-  // rejected value. Only the reported text is cut.
   const fullMessage = typeof error['message'] === 'string' ? error['message'] : JSON.stringify(raw);
   const message = fullMessage.slice(0, MAX_ERROR_MESSAGE_LENGTH);
   const extensions = error['extensions'];
   const code =
     extensions !== null && typeof extensions === 'object' ? (extensions as Json)['code'] : undefined;
 
-  if (typeof code !== 'string') {
-    return { message, schemaChange: GRAPHQL_VALIDATION_PATTERN.test(fullMessage) };
+  if (VARIABLE_REJECTED_PATTERN.test(fullMessage)) {
+    return { message, schemaChange: true };
   }
-  const wrongShape =
-    code === BAD_INPUT_CODE &&
-    VARIABLE_MISMATCH_PATTERN.test(fullMessage) &&
-    VARIABLE_SHAPE_PATTERN.test(variableErrorReason(fullMessage));
-  return { message, schemaChange: SCHEMA_ERROR_CODES.has(code) || wrongShape };
+  if (typeof code !== 'string') {
+    const schemaChange = INVALID_QUERY_PATTERN.test(fullMessage) || GRAPHQL_VALIDATION_PATTERN.test(fullMessage);
+    return { message, schemaChange };
+  }
+  return { message, schemaChange: SCHEMA_ERROR_CODES.has(code) };
 }
 
 /**
@@ -209,15 +209,16 @@ export function readGraphqlFailure(body: unknown): GraphqlFailure | null {
 
 /**
  * Unwraps `{ data: { <operation>: ... } }`, surfacing GraphQL errors first.
- * Only errors about the query itself count as a schema change; anything else
- * the server reports (a rejected search, an internal error) is passed on as it is.
+ * Only errors about the query or its variables, raised before the server runs
+ * anything, count as a schema change; whatever else it reports (a search that
+ * failed, an internal error) is passed on as it is.
  */
 export function unwrapOperation(body: unknown, operation: string): Json {
   const root = asObject(body, 'response');
   const failure = readGraphqlFailure(root);
   if (failure) {
     if (failure.schemaChange) {
-      throw new OmioSchemaError(`GraphQL validation error from ${operation}: ${failure.message}`);
+      throw new OmioSchemaError(`${operation}: ${failure.message}`, 'request');
     }
     throw new Error(`Uber Travel returned an error from ${operation}: ${failure.message}`);
   }
