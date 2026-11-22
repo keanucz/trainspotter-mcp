@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { OmioClient } from '../src/omio.js'
 import { formatOmioFares } from '../src/omio-format.js'
+import { OMIO_UNLISTED_STATIONS } from '../src/omio-station-names.js'
 import { STATIONS } from '../src/stations.js'
 
 // Opt-in: this makes a real search against Uber Travel. Run it with
@@ -37,12 +38,15 @@ describe.skipIf(!live)('Uber Travel live search', () => {
 })
 
 // Opt-in, and slow on purpose: looks every station code in the table up against
-// Uber Travel, pausing a second after each code (about 14 minutes of pauses for
-// 815 codes, plus the time the requests take), to find stations it has started
-// to store under another name. Run it now and then with
+// Uber Travel, pausing a second after each code (about 43 minutes of pauses for
+// some 2,600 codes, plus the time the requests take), to find stations it has
+// started to store under another name. Run it now and then with
 //   OMIO_LIVE_STATIONS=1 npx vitest run test/omio.live.test.ts
 // Optional: OMIO_LIVE_STATION_CODES=ABW,BIS limits the check to those codes.
-// A code listed in the failure needs an entry in OMIO_STATION_NAMES (src/omio-locations.ts).
+// The stations listed in OMIO_UNLISTED_STATIONS are known to be missing and are
+// left out, unless they are named in OMIO_LIVE_STATION_CODES: that is how to
+// find out whether one has since been added.
+// A code listed in the failure needs an entry in OMIO_STATION_NAMES (src/omio-station-names.ts).
 const liveStations = process.env['OMIO_LIVE_STATIONS'] === '1'
 const PAUSE_BETWEEN_LOOKUPS_MS = 1_000
 
@@ -57,7 +61,9 @@ function stationsToCheck(): Array<[string, string]> {
     throw new Error(`OMIO_LIVE_STATION_CODES names codes that are not in the station table: ${unknown.join(', ')}`)
   }
   const all = [...STATIONS]
-  return only.length === 0 ? all : all.filter(([code]) => only.includes(code))
+  return only.length === 0
+    ? all.filter(([code]) => !OMIO_UNLISTED_STATIONS.has(code))
+    : all.filter(([code]) => only.includes(code))
 }
 
 describe.skipIf(!liveStations)('Uber Travel station names', () => {
@@ -92,5 +98,5 @@ describe.skipIf(!liveStations)('Uber Travel station names', () => {
       await pause()
     }
     expect(notFound).toEqual([])
-  }, 40 * 60_000)
+  }, 120 * 60_000)
 })

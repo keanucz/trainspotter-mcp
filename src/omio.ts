@@ -3,7 +3,7 @@
 // This is the search API behind travel.uber.com. It is undocumented and may
 // change or disappear without notice. It needs no account, cookie or API key.
 // The client is deliberately gentle: one search at a time, bounded polling,
-// a short cache, and no retries.
+// a short cache, and no retries beyond one second try after a gateway error.
 
 import {
   EXTEND_SEARCH_QUERY,
@@ -32,7 +32,8 @@ import {
   type GeoPoint,
   type LocationMatch,
 } from './omio-locations.js';
-import { getStationName } from './stations.js';
+import { OMIO_UNLISTED_STATIONS } from './omio-station-names.js';
+import { getStationName, getStationPosition } from './stations.js';
 
 const ENDPOINT = 'https://travel.uber.com/go/travel/graphql';
 const SITE_ORIGIN = 'https://travel.uber.com';
@@ -43,6 +44,15 @@ const CSRF_PLACEHOLDER = 'x';
 const REQUEST_TIMEOUT_MS = 10_000;
 const MAX_ERROR_DETAIL_LENGTH = 200;
 const HTTP_BAD_REQUEST = 400;
+// The service's front end now and then answers 503 "upstream connect error"
+// while the search behind it is fine (seen on about one search in thirty,
+// always on a single request). Such a request is tried once more after the
+// usual pause, and never a third time. Nothing else is retried, and no second
+// try is started that could not finish inside a search's time budget. A second
+// try at starting a search can leave an unused search behind on the service's
+// side if the first try did get through; the reply seen ("upstream connect
+// error") says it did not.
+const GATEWAY_ERROR_STATUSES: ReadonlySet<number> = new Set([502, 503, 504]);
 // An empty location reply is remembered for a moment, so a search that is
 // retried straight away does not look a name that does not exist up again.
 // Kept short, because an empty reply may also be a passing fault on the
@@ -157,6 +167,12 @@ export interface OmioClientOptions {
   fetchFn?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
+}
+
+interface HttpReply {
+  status: number;
+  ok: boolean;
+  text: string;
 }
 
 interface CacheEntry<T> {
@@ -487,12 +503,19 @@ export class OmioClient {
    * under a name the code is looked up by is accepted, never a suggestion.
    */
   private async resolveStation(code: string, stationName: string): Promise<OmioLocation> {
-    const lookup = omioStationLookup(code, stationName);
+    const lookup = omioStationLookup(code, stationName, getStationPosition(code) ?? null);
     let seen: OmioLocation[] = [];
     for (const name of lookup.names) {
       const found = await this.matchByName(name, 'crs', lookup.near);
       if (found.picked) return found.picked;
       seen = [...seen, ...found.seen];
+    }
+    // The search matches on the start of a name, so a station stored under one
+    // of the names can turn up in the reply to another. Everything seen is
+    // therefore held against every name once more.
+    for (const name of lookup.names) {
+      const picked = pickLocation(seen, name, 'crs', lookup.near);
+      if (picked) return picked;
     }
     // Say what else was searched when the search knows the station by another name.
     const otherNames = lookup.names.filter((name) => name !== stationName).map((name) => `"${name}"`);
@@ -503,7 +526,9 @@ export class OmioClient {
     const where = lookup.near ? ' in the right place' : '';
     const reason = lookup.names.some((name) => qualifying(name) > 1)
       ? 'more than one British station with that name came back, and they cannot be told apart'
-      : `no British station with that name came back${where}`;
+      : OMIO_UNLISTED_STATIONS.has(code.toUpperCase())
+        ? `no British station with that name came back${where}, and Uber Travel had no station there when all stations were last checked`
+        : `no British station with that name came back${where}`;
     throw locationNotFound(code, ` (${stationName}${alsoSearched}): ${reason}.`, british);
   }
 
@@ -541,7 +566,7 @@ export class OmioClient {
         userGeoipCountry: 'GB',
         abTestParameters: [],
       },
-    });
+    }, deadline);
     const { searchId } = parseSearchStart(startBody, 'SearchJourneys');
 
     const first = await this.pollUntilDone(searchId, startedAt + POLL_CAP_MS);
@@ -601,7 +626,7 @@ export class OmioClient {
       try {
         const reply = await this.post('ExtendSearchWithoutQuotes', EXTEND_SEARCH_QUERY, {
           request: { searchId, extendDirection: 'outbound', extendTo: 'later', mode: 'SEARCH_MODE_INCREMENTAL' },
-        });
+        }, deadline);
         parseSearchStart(reply, 'ExtendSearchWithoutQuotes');
         const next = await this.pollUntilDone(searchId, deadline, window.end);
         if (next.status !== 'done') {
@@ -647,7 +672,7 @@ export class OmioClient {
           outboundId: '',
           isReplacementSearch: false,
         },
-      });
+      }, deadline);
       latest = parseBooking(body);
       const outOfTime = this.now() + POLL_INTERVAL_MS > deadline;
       const maybeStale =
@@ -692,7 +717,26 @@ export class OmioClient {
     };
   }
 
-  private async post(operationName: string, query: string, variables: unknown): Promise<unknown> {
+  /**
+   * Makes a request and returns its JSON body. A gateway error gets one second
+   * try, unless that try could not finish before `retryBefore` (the time a
+   * search has to be done by).
+   */
+  private async post(
+    operationName: string,
+    query: string,
+    variables: unknown,
+    retryBefore: number = Number.POSITIVE_INFINITY,
+  ): Promise<unknown> {
+    const first = await this.send(operationName, query, variables);
+    const outOfTime = this.now() + POLL_INTERVAL_MS + REQUEST_TIMEOUT_MS > retryBefore;
+    if (!GATEWAY_ERROR_STATUSES.has(first.status) || outOfTime) return this.readReply(operationName, first);
+    await this.sleep(POLL_INTERVAL_MS);
+    return this.readReply(operationName, await this.send(operationName, query, variables));
+  }
+
+  /** Makes one request and returns its status and body text. */
+  private async send(operationName: string, query: string, variables: unknown): Promise<HttpReply> {
     let response: Response;
     try {
       response = await this.fetchFn(ENDPOINT, {
@@ -710,25 +754,29 @@ export class OmioClient {
       throw new Error(`Uber Travel request failed for ${operationName}: ${errorMessage(error)}`);
     }
 
-    let text: string;
     try {
-      text = await response.text();
+      return { status: response.status, ok: response.ok, text: await response.text() };
     } catch (error) {
       throw new Error(`Uber Travel reply for ${operationName} could not be read: ${errorMessage(error)}`);
     }
+  }
+
+  /** Turns a reply into its JSON body, or into the right kind of error. */
+  private readReply(operationName: string, reply: HttpReply): unknown {
+    const { text } = reply;
     const body = parseJson(text);
-    if (!response.ok) {
+    if (!reply.ok) {
       // The server turns down a request that does not fit its schema with HTTP
       // 400 and a GraphQL error list, before running anything. A search it ran
       // and could not finish comes back as HTTP 500 with the same kind of list.
       // The status is the server's own verdict, so a 400 with such a list counts
       // as a schema change even when its wording is new.
       const failure = readGraphqlFailure(body);
-      if (failure && (failure.schemaChange || response.status === HTTP_BAD_REQUEST)) {
+      if (failure && (failure.schemaChange || reply.status === HTTP_BAD_REQUEST)) {
         throw new OmioSchemaError(`${operationName}: ${failure.message}`, 'request');
       }
       const detail = (failure?.message ?? text).slice(0, MAX_ERROR_DETAIL_LENGTH);
-      throw new Error(`Uber Travel request failed (${response.status}) for ${operationName}: ${detail}`);
+      throw new Error(`Uber Travel request failed (${reply.status}) for ${operationName}: ${detail}`);
     }
     if (body === undefined) {
       throw new OmioSchemaError(`${operationName} reply was not JSON`);

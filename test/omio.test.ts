@@ -6,14 +6,16 @@ import {
   normalizeFareQuery,
 } from '../src/omio.js'
 import {
-  OMIO_STATION_NAMES,
+  chooseStation,
   comparableName,
   distanceKm,
   omioStationLookup,
   pickLocation,
 } from '../src/omio-locations.js'
 import { OmioSchemaError, parseLocations } from '../src/omio-parse.js'
-import { STATIONS } from '../src/stations.js'
+import { OMIO_STATION_NAMES, OMIO_UNLISTED_STATIONS } from '../src/omio-station-names.js'
+import { locationSearchTerms } from '../src/omio-locations.js'
+import { STATIONS, getStationPosition } from '../src/stations.js'
 import { loadOmioFixture } from './omio-fixtures.js'
 
 type Responder = unknown | ((variables: any) => unknown)
@@ -100,6 +102,21 @@ function harness(script: Record<string, Responder[]>, options: { status?: number
 }
 
 const BASE_QUERY = { from: 'LPY', to: 'EUS', date: '2027-01-30', time: '06:00' }
+
+/** One station as the location search would list it, standing where the station of `code` is. */
+function stationAt(code: string, name: string, id: string): any {
+  const position = getStationPosition(code)
+  if (!position) throw new Error(`no position for ${code}`)
+  const [location] = loadOmioFixture('search-location-station').data.SearchLocation.locations
+  return { ...location, id, name, latitude: position.latitude, longitude: position.longitude }
+}
+
+/** A location search reply holding the given stations. */
+function replyWith(...locations: any[]): any {
+  const reply = loadOmioFixture('search-location-station')
+  reply.data.SearchLocation.locations = locations
+  return reply
+}
 
 function standardScript(): Record<string, Responder[]> {
   return {
@@ -288,7 +305,7 @@ describe('pickLocation', () => {
     const codesByName = new Map<string, string[]>()
     for (const [code, name] of STATIONS) {
       // Every name a code may be looked up by counts, not only the first.
-      for (const lookupName of new Set(omioStationLookup(code, name).names.map(comparableName))) {
+      for (const lookupName of new Set(omioStationLookup(code, name, null).names.map(comparableName))) {
         codesByName.set(lookupName, [...(codesByName.get(lookupName) ?? []), code])
       }
     }
@@ -297,29 +314,45 @@ describe('pickLocation', () => {
   })
 
   it('only lists a search name for a station code that exists and whose table name differs', () => {
-    for (const [code, alias] of Object.entries(OMIO_STATION_NAMES)) {
-      const tableName = STATIONS.get(code)
-      expect(tableName, code).toBeDefined()
-      expect(alias.name, code).not.toBe(tableName)
-      // Somewhere in Great Britain, so a slip of sign or of digits shows up.
-      expect(alias.latitude, code).toBeGreaterThan(49.9)
-      expect(alias.latitude, code).toBeLessThan(60.9)
-      expect(alias.longitude, code).toBeGreaterThan(-7.6)
-      expect(alias.longitude, code).toBeLessThan(1.8)
+    for (const [code, storedName] of Object.entries(OMIO_STATION_NAMES)) {
+      expect(STATIONS.has(code), code).toBe(true)
+      expect(storedName, code).not.toBe(STATIONS.get(code))
+      expect(storedName.trim(), code).not.toBe('')
     }
   })
 
-  it('looks most stations up by the table name alone, anywhere', () => {
-    expect(omioStationLookup('lpy', 'Liverpool South Parkway')).toEqual({
+  it('only calls a station unlisted when it is in the table and has no search name', () => {
+    for (const code of OMIO_UNLISTED_STATIONS) {
+      expect(STATIONS.has(code), code).toBe(true)
+      expect(OMIO_STATION_NAMES[code], code).toBeUndefined()
+    }
+  })
+
+  it('knows where every station in the table is', () => {
+    for (const [code] of STATIONS) {
+      const position = getStationPosition(code)
+      // Somewhere in Great Britain, so a slip of sign or of digits shows up.
+      expect(position?.latitude, code).toBeGreaterThan(49.9)
+      expect(position?.latitude, code).toBeLessThan(60.9)
+      expect(position?.longitude, code).toBeGreaterThan(-7.6)
+      expect(position?.longitude, code).toBeLessThan(1.8)
+    }
+  })
+
+  it('looks most stations up by the table name alone, in their place', () => {
+    const position = getStationPosition('LPY') ?? null
+    expect(position).not.toBeNull()
+    expect(omioStationLookup('lpy', 'Liverpool South Parkway', position)).toEqual({
       names: ['Liverpool South Parkway'],
-      near: null,
+      near: position,
     })
   })
 
-  it('looks a renamed station up by the stored name first, then the table name, in its place', () => {
-    expect(omioStationLookup('abw', 'Abbey Wood')).toEqual({
+  it('looks a renamed station up by the stored name first, then the table name', () => {
+    const position = getStationPosition('ABW') ?? null
+    expect(omioStationLookup('abw', 'Abbey Wood', position)).toEqual({
       names: ['Abbey Wood Station', 'Abbey Wood'],
-      near: { latitude: 51.4908, longitude: 0.1204 },
+      near: position,
     })
   })
 
@@ -346,6 +379,27 @@ describe('pickLocation', () => {
   it('counts a station that is listed twice as one station', () => {
     const listedTwice = [station('Newport'), station('Newport')] // same id
     expect(pickLocation(listedTwice, 'Newport', 'crs')?.name).toBe('Newport')
+  })
+
+  it('takes the clearly nearer of two same-named stations, and neither when they are about as near', () => {
+    // Seen live: Hairmyres moved, and is listed at its old site (600 m away) and its new one.
+    const here = { latitude: 55.762, longitude: -4.22 }
+    const at = (id: string, metresNorth: number) => ({
+      ...station('Hairmyres'),
+      id,
+      latitude: here.latitude + metresNorth / 111_200,
+      longitude: here.longitude,
+    })
+    expect(chooseStation([at('old', 620), at('new', 20)], here)?.id).toBe('new')
+    expect(pickLocation([at('old', 620), at('new', 20)], 'Hairmyres', 'crs', here)?.id).toBe('new')
+    // 100 m apart is not a clear difference. The line is drawn at 250 m.
+    expect(chooseStation([at('a', 50), at('b', 150)], here)).toBeNull()
+    expect(chooseStation([at('a', 50), at('b', 290)], here)).toBeNull()
+    expect(chooseStation([at('a', 50), at('b', 310)], here)?.id).toBe('a')
+    // Without a known place there is nothing to go by.
+    expect(chooseStation([at('old', 620), at('new', 20)], null)).toBeNull()
+    expect(chooseStation([], here)).toBeNull()
+    expect(chooseStation([at('only', 900)], here)?.id).toBe('only')
   })
 
   it('refuses to choose between two stations of the same name for a CRS code', () => {
@@ -676,17 +730,102 @@ describe('OmioClient.searchFares', () => {
     expect(h.operations()).not.toContain('ExtendSearchWithoutQuotes')
   })
 
-  it('keeps the first window and says so when an extension fails', async () => {
+  it('keeps the first window and says so when an extension fails twice', async () => {
     const h = harness({
       ...standardScript(),
       GetSearchWithoutQuotes: [doneWithWindow('08:22')],
-      ExtendSearchWithoutQuotes: [new Response('upstream connect error', { status: 503 })],
+      ExtendSearchWithoutQuotes: [() => new Response('upstream connect error', { status: 503 })],
     })
     const result = await h.client.searchFares(BASE_QUERY)
     expect(result.complete).toBe(false)
     expect(result.trainWindow?.end).toBe('08:22')
     expect(result.notes.join(' ')).toMatch(/later trains.*503/)
+    // The failed request is tried once more, and not a third time.
+    expect(h.operations().filter((o) => o === 'ExtendSearchWithoutQuotes')).toHaveLength(2)
+  })
+
+  it('tries a request once more when the service answers with a gateway error', async () => {
+    // What the live service did on one search in thirty: one 503, then business as usual.
+    const h = harness({
+      ...standardScript(),
+      ExtendSearchWithoutQuotes: [
+        () =>
+          new Response('upstream connect error or disconnect/reset before headers. reset reason: connection timeout', {
+            status: 503,
+          }),
+        loadOmioFixture('extend-search-running'),
+      ],
+    })
+    const withRetry = await h.client.searchFares({ ...BASE_QUERY, hours: 6 })
+    expect(withRetry.complete).toBe(true)
+    expect(withRetry.notes).toEqual([])
+    expect(withRetry.trainWindow?.end).toBe('12:22')
+    // Two extensions, the first of which needed its second try.
+    expect(h.operations().filter((o) => o === 'ExtendSearchWithoutQuotes')).toHaveLength(3)
+    // The second try waits the usual second: 5 s of polling plus 1 s.
+    expect(h.elapsed()).toBe(6000)
+  })
+
+  it('does not start a second try that could not finish inside the time left', async () => {
+    // Nineteen slow polls, then a gateway error on the twentieth, at the 20 s cap for first results.
+    const h = harness({
+      ...standardScript(),
+      GetSearchWithoutQuotes: [
+        ...Array.from({ length: 19 }, () => loadOmioFixture('get-search-running')),
+        () => new Response('upstream connect error', { status: 503 }),
+      ],
+    })
+    await expect(h.client.searchFares(BASE_QUERY)).rejects.toThrow(
+      'Uber Travel request failed (503) for GetSearchWithoutQuotes: upstream connect error',
+    )
+    expect(h.operations().filter((o) => o === 'GetSearchWithoutQuotes')).toHaveLength(20)
+    expect(h.elapsed()).toBe(20000)
+  })
+
+  it('does not try an extension again when its first try used up the time left', async () => {
+    // First results arrive at the 20 s cap, so the extension starts with 15 s to go.
+    // Its first try takes 9 s to fail: a second could no longer finish inside the 35 s.
+    const state: { advance?: (ms: number) => void } = {}
+    const h = harness({
+      ...standardScript(),
+      GetSearchWithoutQuotes: [
+        ...Array.from({ length: 19 }, () => loadOmioFixture('get-search-running')),
+        doneWithWindow('08:22'),
+      ],
+      ExtendSearchWithoutQuotes: [
+        () => {
+          state.advance?.(9000)
+          return new Response('upstream connect error', { status: 503 })
+        },
+      ],
+    })
+    state.advance = h.advance
+    const result = await h.client.searchFares(BASE_QUERY)
     expect(h.operations().filter((o) => o === 'ExtendSearchWithoutQuotes')).toHaveLength(1)
+    expect(result.notes.join(' ')).toMatch(/Could not load later trains.*503/)
+    expect(result.trainWindow?.end).toBe('08:22')
+  })
+
+  it.each([502, 503, 504])('gives up after a second HTTP %i and reports it', async (status) => {
+    const h = harness({
+      ...standardScript(),
+      SearchJourneys: [() => new Response('bad gateway', { status })],
+    })
+    await expect(h.client.searchFares(BASE_QUERY)).rejects.toThrow(
+      `Uber Travel request failed (${status}) for SearchJourneys: bad gateway`,
+    )
+    expect(h.operations().filter((o) => o === 'SearchJourneys')).toHaveLength(2)
+  })
+
+  it('does not try again after any other kind of failure', async () => {
+    for (const status of [400, 403, 404, 429, 500]) {
+      const h = harness({
+        ...standardScript(),
+        SearchJourneys: [() => new Response('no', { status })],
+      })
+      await expect(h.client.searchFares(BASE_QUERY)).rejects.toThrow(`(${status})`)
+      expect(h.operations().filter((o) => o === 'SearchJourneys'), String(status)).toHaveLength(1)
+    }
   })
 
   it('serves an identical search from the cache', async () => {
@@ -807,9 +946,8 @@ describe('OmioClient.searchFares', () => {
     ['SPB', ["Shepherd's Bush"], "Shepherd's Bush"],
     ['Harrow and Wealdstone', ['Harrow'], 'Harrow & Wealdstone'],
   ])('searches for %s with terms the location search can answer', async (input, terms, uberName) => {
-    const found = loadOmioFixture('search-location-station')
-    found.data.SearchLocation.locations[0].name = uberName
-    found.data.SearchLocation.locations[0].id = '777'
+    // A station code is only accepted where its station is; free text has no such check.
+    const found = replyWith(stationAt(STATIONS.has(input) ? input : 'HRW', uberName, '777'))
     const answered = terms[terms.length - 1]
     const h = harness({
       ...standardScript(),
@@ -1015,9 +1153,7 @@ describe('OmioClient.searchFares', () => {
 
   it('tries the possessive spelling for a station code too, and still demands the right station', async () => {
     // SAC is "St Albans City" in the station table.
-    const stored = loadOmioFixture('search-location-station')
-    stored.data.SearchLocation.locations[0].name = "St Alban's City"
-    stored.data.SearchLocation.locations[0].id = '555'
+    const stored = replyWith(stationAt('SAC', "St Alban's City", '555'))
     const answer = (name: string, reply: unknown) => (variables: any) =>
       variables.request.name === name ? reply : locationResponder(variables)
 
@@ -1025,11 +1161,10 @@ describe('OmioClient.searchFares', () => {
     const result = await right.client.searchFares({ ...BASE_QUERY, from: 'SAC' })
     expect(result.origin).toMatchObject({ id: '555', name: "St Alban's City" })
 
-    const wrongStation = loadOmioFixture('search-location-station')
-    wrongStation.data.SearchLocation.locations[0].name = "St Alban's"
+    const wrongStation = replyWith(stationAt('SAC', "St Alban's", '556'))
     const wrong = harness({ ...standardScript(), SearchLocation: [answer("St Alban's City", wrongStation)] })
     await expect(wrong.client.searchFares({ ...BASE_QUERY, from: 'SAC' })).rejects.toThrow(
-      /No Uber Travel location found for "SAC" \(St Albans City\).*Uber Travel offers: St Alban's\./,
+      /No Uber Travel location found for "SAC" \(St Albans City\): no British station with that name came back in the right place\. Uber Travel offers: St Alban's\./,
     )
   })
 
@@ -1075,9 +1210,7 @@ describe('OmioClient.searchFares', () => {
     ['SRG', 'Seer Green', 'Seer Green & Jordans'],
     ['RAV', 'Ravenglass for Eskdale', 'Ravenglass for Eskdale'],
   ])('resolves %s by searching "%s" and matching "%s" exactly', async (code, term, storedName) => {
-    const stored = loadOmioFixture('search-location-station')
-    stored.data.SearchLocation.locations[0].name = storedName
-    stored.data.SearchLocation.locations[0].id = '321'
+    const stored = replyWith(stationAt(code, storedName, '321'))
     const h = harness({
       ...standardScript(),
       SearchLocation: [(variables: any) => (variables.request.name === term ? stored : locationResponder(variables))],
@@ -1087,8 +1220,9 @@ describe('OmioClient.searchFares', () => {
     expect(result.origin).toMatchObject({ id: '321', name: storedName })
   })
 
-  // The eight stations the location search stores under another name than the
-  // station table. Each row: code, the text sent, the stored name it must match.
+  // Eight of the stations the location search stores under another name than the
+  // station table (the first ones found). Each row: code, the text sent, the stored
+  // name it must match. Every entry of the list is covered by the test after this one.
   it.each([
     ['ABW', 'Abbey Wood Station', 'Abbey Wood Station'],
     ['BIS', "Bishop's Stortford", "Bishop's Stortford"],
@@ -1099,13 +1233,7 @@ describe('OmioClient.searchFares', () => {
     ['SYD', 'Sydenham (London)', 'Sydenham (London)'],
     ['WCH', 'Whitchurch', 'Whitchurch'],
   ])('looks %s up as "%s"', async (code, term, storedName) => {
-    const stored = loadOmioFixture('search-location-station')
-    Object.assign(stored.data.SearchLocation.locations[0], {
-      name: storedName,
-      id: '432',
-      latitude: OMIO_STATION_NAMES[code]?.latitude,
-      longitude: OMIO_STATION_NAMES[code]?.longitude,
-    })
+    const stored = replyWith(stationAt(code, storedName, '432'))
     const h = harness({
       ...standardScript(),
       SearchLocation: [(variables: any) => (variables.request.name === term ? stored : locationResponder(variables))],
@@ -1113,6 +1241,25 @@ describe('OmioClient.searchFares', () => {
     const result = await h.client.searchFares({ ...BASE_QUERY, from: code })
     expect(h.calls[0]?.variables.request.name).toBe(term)
     expect(result.origin).toMatchObject({ id: '432', name: storedName })
+  })
+
+  it('resolves every station that is stored under another name, by that name and in its place', async () => {
+    for (const [code, storedName] of Object.entries(OMIO_STATION_NAMES)) {
+      const terms = locationSearchTerms(storedName)
+      const h = harness({
+        ...standardScript(),
+        SearchLocation: [
+          (variables: any) =>
+            terms.includes(variables.request.name)
+              ? replyWith(stationAt(code, storedName, `id-${code}`))
+              : locationResponder(variables),
+        ],
+      })
+      const place = await h.client.resolvePlace(code)
+      expect(place, code).toMatchObject({ id: `id-${code}`, name: storedName })
+      // Found on the first name tried: one request, or two when the name has an apostrophe.
+      expect(h.calls.length, code).toBeLessThanOrEqual(terms.length)
+    }
   })
 
   it('still matches a station with another search name exactly, not its longer-named neighbours', async () => {
@@ -1133,14 +1280,7 @@ describe('OmioClient.searchFares', () => {
   })
 
   it('says so when a station code is refused because two stations share its name', async () => {
-    const twins = loadOmioFixture('search-location-city')
-    twins.data.SearchLocation.locations = ['111', '222'].map((id) => ({
-      ...twins.data.SearchLocation.locations[1],
-      id,
-      name: 'London Waterloo',
-      type: 'station',
-      countryCode: 'GB',
-    }))
+    const twins = replyWith(stationAt('WAT', 'London Waterloo', '111'), stationAt('WAT', 'London Waterloo', '222'))
     const h = harness({ ...standardScript(), SearchLocation: [twins] })
     await expect(h.client.searchFares({ ...BASE_QUERY, from: 'WAT' })).rejects.toThrow(
       /No Uber Travel location found for "WAT" \(London Waterloo\): more than one British station with that name came back, and they cannot be told apart\./,
@@ -1174,15 +1314,9 @@ describe('OmioClient.searchFares', () => {
 
   it('keeps refusing two same-named stations when another spelling returns only one of them', async () => {
     // SPB is "Shepherd's Bush": looked up with its apostrophe, then without.
-    const entry = (id: string) => ({
-      ...loadOmioFixture('search-location-station').data.SearchLocation.locations[0],
-      id,
-      name: "Shepherd's Bush",
-    })
-    const both = loadOmioFixture('search-location-station')
-    both.data.SearchLocation.locations = [entry('one'), entry('two')]
-    const single = loadOmioFixture('search-location-station')
-    single.data.SearchLocation.locations = [entry('one')]
+    const entry = (id: string) => stationAt('SPB', "Shepherd's Bush", id)
+    const both = replyWith(entry('one'), entry('two'))
+    const single = replyWith(entry('one'))
     const h = harness({
       ...standardScript(),
       SearchLocation: [
@@ -1199,6 +1333,48 @@ describe('OmioClient.searchFares', () => {
     )
     const lookups = h.calls.filter((c) => c.operationName === 'SearchLocation').map((c) => c.variables.request.name)
     expect(lookups).toEqual(["Shepherd's Bush", 'Shepherds Bush'])
+  })
+
+  it('resolves a station that moved to the entry at its present site', async () => {
+    const position = getStationPosition('HMY')
+    if (!position) throw new Error('no position for HMY')
+    const oldSite = { ...stationAt('HMY', 'Hairmyres', '319214'), latitude: position.latitude + 0.0056 }
+    const h = harness({
+      ...standardScript(),
+      SearchLocation: [
+        (variables: any) =>
+          variables.request.name === 'Hairmyres'
+            ? replyWith(oldSite, stationAt('HMY', 'Hairmyres', '17446119'))
+            : locationResponder(variables),
+      ],
+    })
+    const result = await h.client.searchFares({ ...BASE_QUERY, from: 'HMY' })
+    expect(result.origin.id).toBe('17446119')
+  })
+
+  it('finds a renamed station in the reply to its other name', async () => {
+    // ADL is stored as "Adlington (Lancs)". Here that query finds nothing, but the
+    // table's "Adlington (Lancashire)" does bring the station back, under its stored name.
+    const h = harness({
+      ...standardScript(),
+      SearchLocation: [
+        (variables: any) =>
+          variables.request.name === 'Adlington (Lancashire)'
+            ? replyWith(stationAt('ADL', 'Adlington (Lancs)', '909'))
+            : locationResponder(variables),
+      ],
+    })
+    const result = await h.client.searchFares({ ...BASE_QUERY, from: 'ADL' })
+    const lookups = h.calls.filter((c) => c.operationName === 'SearchLocation').map((c) => c.variables.request.name)
+    expect(lookups).toEqual(['Adlington (Lancs)', 'Adlington (Lancashire)', 'London Euston'])
+    expect(result.origin).toMatchObject({ id: '909', name: 'Adlington (Lancs)' })
+  })
+
+  it('says when a station it cannot find was missing from Uber Travel at the last full check', async () => {
+    const h = harness(standardScript())
+    await expect(h.client.searchFares({ ...BASE_QUERY, from: 'ASL' })).rejects.toThrow(
+      /No Uber Travel location found for "ASL" \(Ashington\): no British station with that name came back in the right place, and Uber Travel had no station there when all stations were last checked\./,
+    )
   })
 
   it('falls back to the table name when the search stops using its own name for a station', async () => {

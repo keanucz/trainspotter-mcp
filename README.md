@@ -11,7 +11,7 @@ Built this because I kept asking "is my train delayed?" and "how much is a ticke
 - Full service details with every calling point and delay prediction
 - Station-to-station train search
 - Disruption messages
-- 815 stations with fuzzy name search
+- All 2,610 National Rail stations in Great Britain, with fuzzy name search
 
 **Historical performance** (HSP)
 - Delay statistics between any two stations
@@ -141,7 +141,7 @@ Common railcard codes for `search_fares`:
 - **It is not a full-day timetable.** Trains come back for at least `hours` hours from `time` (defaults: 4 hours from 06:00). Raise `hours` (up to 12) or search again with a later `time` for the rest of the day. Coaches come back for the rest of the day in one go.
 - **Coaches use their own stops.** A coach row shows the stop it really leaves from, which is usually not the rail station you searched.
 
-Arguments: `from` and `to` take a CRS code (`LPY`) or a place name (`Liverpool`). A CRS code only ever resolves to the station stored under the name that code is looked up by, compared without regard to case and punctuation (`WAT` is London Waterloo, never London Waterloo East). That name is the station table's, except for the eight stations mentioned below; if Uber Travel lists it under any other name the search stops with an error that names the stations it does offer, instead of guessing. All 815 codes in the station table were checked against the live search in November 2026: each one resolved, and to a station within 300 metres of that code's position in a public station list. The repeatable check under Development confirms that every code still resolves; it compares positions only for the eight stations named next. Eight are stored there under another name (`ABW` as "Abbey Wood Station", for example). Those are looked up by that name first and by the table's name second, and a result only counts if it is within a kilometre of where the station is, so a namesake elsewhere is never taken. The list is in `src/omio-locations.ts`. `date` is `YYYY-MM-DD`; optional `time` (`HH:MM`, UK local), `hours` (1 to 12, default 4), `modes` (`train`, `coach`), `railcards` (one code), `age` and `direct_only`. If a place does not resolve, `omio_locations` shows the names Uber Travel knows.
+Arguments: `from` and `to` take a CRS code (`LPY`) or a place name (`Liverpool`). A CRS code only ever resolves to the station it stands for: a British station that Uber Travel stores under that station's name (compared without regard to case and punctuation) and that stands within a kilometre of where the station is. `WAT` is London Waterloo, never London Waterloo East. If no such station comes back the search stops with an error that names the stations Uber Travel does offer, instead of guessing. Every station in the table was looked up against the live search in November 2026. Of the 2,610, 2,548 are stored under the table's name, 51 under another name (`ABW` as "Abbey Wood Station", `ADL` as "Adlington (Lancs)"; those are looked up by that name first and the table's name second), and 11 are not there at all (newly opened stations such as Ashington, and a few stops with no regular service). Both lists are in `src/omio-station-names.ts`. `date` is `YYYY-MM-DD`; optional `time` (`HH:MM`, UK local), `hours` (1 to 12, default 4), `modes` (`train`, `coach`), `railcards` (one code), `age` and `direct_only`. If a place does not resolve, `omio_locations` shows the names Uber Travel knows.
 
 Railcard codes accepted by `search_omio_fares` (one per search): `YNG` 16-25, `TST` 26-30, `TSU` 16-17 Saver, `SRN` Senior, `2TR` Two Together, `FAM` Family & Friends, `DIS` Disabled Persons, `DIC` Disabled Child, `HMF` HM Forces, `VET` Veterans, `NEW` Network Railcard, `NGC` Gold Card, `JCP` Jobcentre Plus.
 
@@ -157,7 +157,7 @@ dep→arr | from → to | changes | operator | mode | price
 11:00→18:10 | Liverpool, One Bus Station, Canning Place → London, Victoria Coach Station | direct | National Express | coach | £7.40
 ```
 
-The client is deliberately gentle with a service that never offered an API: one search at a time, polling once a second (the first results get 20 seconds, the whole search about 35; the budget is checked between requests, so one slow reply can run it over), only as many requests for later trains as `hours` needs and never more than ten, a five-minute result cache, and no retries. Please keep it that way.
+The client is deliberately gentle with a service that never offered an API: one search at a time, polling once a second (the first results get 20 seconds, the whole search about 35; the budget is checked between requests, so one slow reply can run it over), only as many extensions for later trains as `hours` needs and never more than ten, a five-minute result cache, and no retries, with one exception: a request the service answers with a gateway error (HTTP 502, 503 or 504, which its front end does now and then while the search behind it is fine) is tried once more after a second, never a third time, and not at all when there is no time left for it in the search's budget. (If such a first try at starting a search did in fact get through, the second leaves an unused search behind on the service's side; the error seen so far says the request never arrived.) Please keep it that way.
 
 How it tells a broken API from a failed search: the server turns down a request that does not fit its schema before running it (HTTP 400: a changed field, a changed input type, a removed enum value, or a move to server-side stored queries). That is reported as a schema change, which means these tools need updating. A search the server ran and could not finish (HTTP 500), such as an expired search, is reported as the plain error it is. The split was checked against the live service with 34 deliberately broken requests: every HTTP 400 that carried an error list was a request that did not fit the schema, and no other kind of failure produced one. It is not complete the other way round: a few changes surface as HTTP 500 (a field the server needs and no longer gets, for example), so if every search starts failing that way, suspect a change as well.
 
@@ -173,13 +173,13 @@ npm test        # run tests (vitest)
 # opt-in: one real search against Uber Travel
 OMIO_LIVE=1 npx vitest run test/omio.live.test.ts
 
-# opt-in, 15 to 20 minutes: look every station code up against Uber Travel, one code a second
+# opt-in, about an hour: look every station code up against Uber Travel, one code a second
 OMIO_LIVE_STATIONS=1 npx vitest run test/omio.live.test.ts
 # the same for a few codes only
 OMIO_LIVE_STATIONS=1 OMIO_LIVE_STATION_CODES=ABW,BIS npx vitest run test/omio.live.test.ts
 ```
 
-Around 300 tests covering SOAP XML parsing, fare response handling, station lookups, delay calculation edge cases, and Uber Travel response parsing against fixtures cut from a sanitized browser capture.
+Around 350 tests covering SOAP XML parsing, fare response handling, station lookups, delay calculation edge cases, and Uber Travel response parsing against fixtures cut from a sanitized browser capture.
 
 ## Darwin Evolution (heads up)
 
@@ -187,4 +187,6 @@ NRE is migrating Darwin to a new system mid-2026. If the LDBWS endpoint changes,
 
 ## License
 
-MIT
+The code is MIT.
+
+The station table, `src/station-data.ts` (codes, names and positions of the stations), is data under the [Open Database License (ODbL) 1.0](https://opendatacommons.org/licenses/odbl/1-0/). It is derived from the [uk-railway-stations](https://github.com/davwheat/uk-railway-stations) dataset by davwheat, which is derived from [Trainline EU's stations dataset](https://github.com/trainline-eu/stations#licence), whose data come from OpenStreetMap (© OpenStreetMap contributors), SNCF OpenData, GeoNames, Digitraffic.fi, OpenTransportData.swiss and admin.ch. The changes made to it are described at the top of that file.

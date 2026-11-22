@@ -1,43 +1,23 @@
 // Place names for the Uber Travel (Omio-backed) location search: how a name is
-// sent to the search, how its results are matched, and which stations the
-// search stores under a different name from the one in the station table.
+// sent to the search and how its results are matched. The stations the search
+// stores under a different name from the station table are in omio-station-names.ts.
 
 import type { OmioLocation } from './omio-parse.js';
+import { OMIO_STATION_NAMES } from './omio-station-names.js';
 
 export interface GeoPoint {
   latitude: number;
   longitude: number;
 }
 
-export interface OmioStationAlias extends GeoPoint {
-  /** The name the location search stores the station under. */
-  name: string;
-}
-
-/**
- * Stations the location search stores under another name than the station
- * table, with where each one is. Found by resolving all 815 table entries
- * against the live search (November 2026): these eight did not match by name,
- * and each entry below is the result that sat within 100 metres of the
- * station's real position. "Wharfdale" is the search's own spelling.
- *
- * Some of these names are less exact than the table's ("Bootle" for Bootle
- * (Cumbria)), so a result is only accepted when it is also in the right place.
- */
-export const OMIO_STATION_NAMES: Readonly<Record<string, OmioStationAlias>> = {
-  ABW: { name: 'Abbey Wood Station', latitude: 51.4908, longitude: 0.1204 },
-  BIS: { name: "Bishop's Stortford", latitude: 51.8666, longitude: 0.1649 },
-  BOC: { name: 'Bootle', latitude: 54.2914, longitude: -3.3937 },
-  BUW: { name: 'Burley-in-Wharfdale', latitude: 53.9081, longitude: -1.7532 },
-  CUS: { name: 'Custom House Station', latitude: 51.5099, longitude: 0.0272 },
-  MCE: { name: 'Metro Centre', latitude: 54.959, longitude: -1.6654 },
-  SYD: { name: 'Sydenham (London)', latitude: 51.4273, longitude: -0.0551 },
-  WCH: { name: 'Whitchurch', latitude: 51.2376, longitude: -1.3379 },
-};
-
-// How far a result may be from where the station is known to be. Entries of
-// the same name that are another place are tens of kilometres away.
+// How far a result may be from where the station is known to be. Stations sit
+// within about 300 metres of their listed position; a namesake that is another
+// place is tens of kilometres away.
 const STATION_POSITION_TOLERANCE_KM = 1;
+// When two same-named stations both stand near enough, the nearer one is taken
+// only if the other is at least this much further away. Seen live: a station
+// that moved is listed at its old and its new site, 600 metres apart.
+const CLEARLY_NEARER_KM = 0.25;
 const EARTH_RADIUS_KM = 6371;
 
 export interface OmioStationLookup {
@@ -48,15 +28,16 @@ export interface OmioStationLookup {
 }
 
 /**
- * How to look a station code up. Most stations are stored under the station
- * table's name. For the ones in OMIO_STATION_NAMES the stored name is tried
- * first and the table's name second, so the code keeps resolving if the search
- * is ever brought into line with the table.
+ * How to look a station code up. Most stations are stored by the location
+ * search under the station table's name. For the ones in OMIO_STATION_NAMES
+ * the stored name is tried first and the table's name second, so the code
+ * keeps resolving if the search is ever brought into line with the table.
+ * Either way a result only counts when it stands at `position`.
  */
-export function omioStationLookup(crs: string, tableName: string): OmioStationLookup {
-  const alias = OMIO_STATION_NAMES[crs.toUpperCase()];
-  if (!alias) return { names: [tableName], near: null };
-  return { names: [alias.name, tableName], near: { latitude: alias.latitude, longitude: alias.longitude } };
+export function omioStationLookup(crs: string, tableName: string, position: GeoPoint | null): OmioStationLookup {
+  const storedName = OMIO_STATION_NAMES[crs.toUpperCase()];
+  const names = storedName === undefined || storedName === tableName ? [tableName] : [storedName, tableName];
+  return { names, near: position };
 }
 
 /** Great-circle distance between two points, in kilometres. */
@@ -148,6 +129,20 @@ export function stationCandidates(
 }
 
 /**
+ * The one station among the candidates that a station code stands for, or null
+ * when they cannot be told apart. A single candidate is it. Of several, the
+ * one clearly nearest to where the station is known to be is taken; without a
+ * known position, or when they are about equally near, none is.
+ */
+export function chooseStation(candidates: readonly OmioLocation[], near: GeoPoint | null): OmioLocation | null {
+  if (candidates.length <= 1) return candidates[0] ?? null;
+  if (near === null) return null;
+  const [nearest, runnerUp] = [...candidates].sort((a, b) => distanceKm(a, near) - distanceKm(b, near));
+  if (!nearest || !runnerUp) return null;
+  return distanceKm(runnerUp, near) - distanceKm(nearest, near) >= CLEARLY_NEARER_KM ? nearest : null;
+}
+
+/**
  * How strictly a SearchLocation result must match what was asked for.
  * - `crs`: the input was a known CRS code, `name` is a name that station
  *   is looked up by (see omioStationLookup).
@@ -165,9 +160,10 @@ export type LocationMatch = 'crs' | 'exact' | 'free';
  * "London Waterloo"), and neither is a shorter one. The wanted name therefore
  * has to be the full name the search stores: the station table's name, or the
  * entry in OMIO_STATION_NAMES where the two differ. When `near` is given, the
- * station must also be there. And if two stations qualify, neither is taken:
- * they cannot be told apart. The caller passes everything its lookup of that
- * name returned, so the count covers every spelling tried.
+ * station must also be there. And if two stations qualify, the one clearly
+ * nearer to that place is taken, and neither when they cannot be told apart
+ * (see chooseStation). The caller passes everything its lookup of that name
+ * returned, so the count covers every spelling tried.
  *
  * For `free` text an exact name wins, otherwise the API's own first suggestion
  * is used, which is what the website's autocomplete would offer.
@@ -180,10 +176,7 @@ export function pickLocation(
 ): OmioLocation | null {
   const wanted = comparableName(name);
   const isExact = (location: OmioLocation): boolean => comparableName(location.name) === wanted;
-  if (match === 'crs') {
-    const candidates = stationCandidates(locations, name, near);
-    return candidates.length === 1 ? (candidates[0] ?? null) : null;
-  }
+  if (match === 'crs') return chooseStation(stationCandidates(locations, name, near), near);
 
   const exactStation = locations.find((location) => location.type === 'station' && isExact(location));
   if (exactStation) return exactStation;

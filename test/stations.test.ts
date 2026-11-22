@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { STATIONS, getStationName, findStation, isValidCrs } from '../src/stations.js';
+import { STATIONS, getStationName, getStationPosition, findStation, isValidCrs } from '../src/stations.js';
 
 describe('STATIONS map', () => {
   it('should be a ReadonlyMap', () => {
@@ -12,7 +12,7 @@ describe('STATIONS map', () => {
 
   it('should hold exactly the number of stations the README states', () => {
     // A duplicate code in the table would be swallowed by the Map and show up here.
-    expect(STATIONS.size).toBe(815);
+    expect(STATIONS.size).toBe(2610);
   });
 
   it('should have string keys and string values', () => {
@@ -124,8 +124,15 @@ describe('Codes that used to point at the wrong station', () => {
     expect(STATIONS.get(crs)).toBe(name);
   });
 
-  it('should not keep airport codes from the airline world', () => {
-    expect(STATIONS.has('LGW')).toBe(false);
+  it('should not give an airport the code it has in the airline world', () => {
+    // LGW is Langwathby in Cumbria. Gatwick Airport is GTW.
+    expect(STATIONS.get('LGW')).toBe('Langwathby');
+    expect(STATIONS.get('GTW')).toBe('Gatwick Airport');
+  });
+
+  it('should know where each station is', () => {
+    expect(getStationPosition('lpy')).toEqual({ latitude: 53.3577, longitude: -2.8897 });
+    expect(getStationPosition('ZZZ')).toBeUndefined();
   });
 
   it('should list every station name once', () => {
@@ -192,6 +199,21 @@ describe('findStation', () => {
     const names = results.map(r => r.name);
     const sorted = [...names].sort();
     expect(names).toEqual(sorted);
+  });
+
+  it('should put the station called exactly that first', () => {
+    // Many names contain "Stone" or "Wick"; the stations of that name must not fall off the list.
+    expect(findStation('Stone')[0]).toEqual({ crs: 'SNE', name: 'Stone' });
+    expect(findStation('wick')[0]).toEqual({ crs: 'WCK', name: 'Wick' });
+  });
+
+  it('should put names that start with the query before names that only contain it', () => {
+    // "Park" starts a few names (Park Street, Parkstone) and sits inside many more
+    // (Albany Park, Finsbury Park), which would come first in plain alphabetical order.
+    const starts = findStation('Park').map((r) => r.name.toLowerCase().startsWith('park'));
+    expect(starts[0]).toBe(true);
+    expect(starts).toContain(false);
+    expect(starts.lastIndexOf(true)).toBeLessThan(starts.indexOf(false));
   });
 
   it('should return empty array for no matches', () => {
