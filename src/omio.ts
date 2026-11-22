@@ -505,16 +505,28 @@ export class OmioClient {
   private async resolveStation(code: string, stationName: string): Promise<OmioLocation> {
     const lookup = omioStationLookup(code, stationName, getStationPosition(code) ?? null);
     let seen: OmioLocation[] = [];
-    for (const name of lookup.names) {
-      const found = await this.matchByName(name, 'crs', lookup.near);
-      if (found.picked) return found.picked;
-      seen = [...seen, ...found.seen];
+    if (lookup.entryId === null) {
+      for (const name of lookup.names) {
+        const found = await this.matchByName(name, 'crs', lookup.near);
+        if (found.picked) return found.picked;
+        seen = [...seen, ...found.seen];
+      }
+    } else {
+      // The search lists this station twice and one entry is the one to use.
+      // Every spelling of every name is looked up before choosing, so that
+      // entry is found if it is listed at all, and the other entry is not
+      // taken because an earlier reply happened to hold it alone. The stored
+      // name of such a station is known, so no spelling is guessed.
+      for (const term of lookup.names.flatMap((name) => locationSearchTerms(name))) {
+        seen = [...seen, ...(await this.lookupLocations(term))];
+      }
     }
     // The search matches on the start of a name, so a station stored under one
     // of the names can turn up in the reply to another. Everything seen is
-    // therefore held against every name once more.
+    // therefore held against every name once more. This is also where a
+    // station with a named entry is chosen.
     for (const name of lookup.names) {
-      const picked = pickLocation(seen, name, 'crs', lookup.near);
+      const picked = pickLocation(seen, name, 'crs', lookup.near, lookup.entryId);
       if (picked) return picked;
     }
     // Say what else was searched when the search knows the station by another name.

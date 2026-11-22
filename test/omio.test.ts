@@ -13,9 +13,9 @@ import {
   pickLocation,
 } from '../src/omio-locations.js'
 import { OmioSchemaError, parseLocations } from '../src/omio-parse.js'
-import { OMIO_STATION_NAMES, OMIO_UNLISTED_STATIONS } from '../src/omio-station-names.js'
+import { OMIO_STATION_ENTRIES, OMIO_STATION_NAMES, OMIO_UNLISTED_STATIONS } from '../src/omio-station-names.js'
 import { locationSearchTerms } from '../src/omio-locations.js'
-import { STATIONS, getStationPosition } from '../src/stations.js'
+import { STATIONS, getStationName, getStationPosition } from '../src/stations.js'
 import { loadOmioFixture } from './omio-fixtures.js'
 
 type Responder = unknown | ((variables: any) => unknown)
@@ -345,6 +345,7 @@ describe('pickLocation', () => {
     expect(omioStationLookup('lpy', 'Liverpool South Parkway', position)).toEqual({
       names: ['Liverpool South Parkway'],
       near: position,
+      entryId: null,
     })
   })
 
@@ -353,6 +354,7 @@ describe('pickLocation', () => {
     expect(omioStationLookup('abw', 'Abbey Wood', position)).toEqual({
       names: ['Abbey Wood Station', 'Abbey Wood'],
       near: position,
+      entryId: null,
     })
   })
 
@@ -381,8 +383,9 @@ describe('pickLocation', () => {
     expect(pickLocation(listedTwice, 'Newport', 'crs')?.name).toBe('Newport')
   })
 
-  it('takes the clearly nearer of two same-named stations, and neither when they are about as near', () => {
+  it('takes the named entry of a station that is listed twice in its place, and otherwise neither', () => {
     // Seen live: Hairmyres moved, and is listed at its old site (600 m away) and its new one.
+    // Only the entry at the old site returned trains, so the nearer entry is not the one to take.
     const here = { latitude: 55.762, longitude: -4.22 }
     const at = (id: string, metresNorth: number) => ({
       ...station('Hairmyres'),
@@ -390,16 +393,31 @@ describe('pickLocation', () => {
       latitude: here.latitude + metresNorth / 111_200,
       longitude: here.longitude,
     })
-    expect(chooseStation([at('old', 620), at('new', 20)], here)?.id).toBe('new')
-    expect(pickLocation([at('old', 620), at('new', 20)], 'Hairmyres', 'crs', here)?.id).toBe('new')
-    // 100 m apart is not a clear difference. The line is drawn at 250 m.
-    expect(chooseStation([at('a', 50), at('b', 150)], here)).toBeNull()
-    expect(chooseStation([at('a', 50), at('b', 290)], here)).toBeNull()
-    expect(chooseStation([at('a', 50), at('b', 310)], here)?.id).toBe('a')
-    // Without a known place there is nothing to go by.
-    expect(chooseStation([at('old', 620), at('new', 20)], null)).toBeNull()
-    expect(chooseStation([], here)).toBeNull()
-    expect(chooseStation([at('only', 900)], here)?.id).toBe('only')
+    const both = [at('old', 620), at('new', 20)]
+    expect(chooseStation(both, 'old')?.id).toBe('old')
+    expect(chooseStation([...both].reverse(), 'old')?.id).toBe('old')
+    expect(pickLocation(both, 'Hairmyres', 'crs', here, 'old')?.id).toBe('old')
+    // Nothing says which entry has the trains, so without a named entry neither is taken,
+    // however much nearer one of them is.
+    expect(chooseStation(both, null)).toBeNull()
+    expect(pickLocation(both, 'Hairmyres', 'crs', here)).toBeNull()
+    // A named entry that is not among them decides nothing.
+    expect(chooseStation(both, 'gone')).toBeNull()
+    // A single entry is the station, whichever entry was named.
+    expect(chooseStation([at('new', 20)], 'old')?.id).toBe('new')
+    expect(chooseStation([at('only', 900)], null)?.id).toBe('only')
+    expect(chooseStation([], 'old')).toBeNull()
+    // The named entry still has to stand in the right place.
+    expect(pickLocation([at('old', 1500), at('new', 20)], 'Hairmyres', 'crs', here, 'old')?.id).toBe('new')
+  })
+
+  it('names an entry only for station codes in the table', () => {
+    for (const [code, entryId] of Object.entries(OMIO_STATION_ENTRIES)) {
+      expect(getStationName(code), code).toBeDefined()
+      expect(entryId, code).toMatch(/^\d+$/)
+      expect(omioStationLookup(code.toLowerCase(), getStationName(code) ?? '', null).entryId).toBe(entryId)
+    }
+    expect(omioStationLookup('HMY', 'Hairmyres', null).entryId).toBe('319214')
   })
 
   it('refuses to choose between two stations of the same name for a CRS code', () => {
@@ -1335,21 +1353,59 @@ describe('OmioClient.searchFares', () => {
     expect(lookups).toEqual(["Shepherd's Bush", 'Shepherds Bush'])
   })
 
-  it('resolves a station that moved to the entry at its present site', async () => {
+  it('resolves a station that is listed twice to the entry that has its trains', async () => {
+    // Seen live: of the two Hairmyres entries, the one at the present site returned no trains.
     const position = getStationPosition('HMY')
     if (!position) throw new Error('no position for HMY')
     const oldSite = { ...stationAt('HMY', 'Hairmyres', '319214'), latitude: position.latitude + 0.0056 }
+    const presentSite = stationAt('HMY', 'Hairmyres', '17446119')
+    for (const reply of [replyWith(oldSite, presentSite), replyWith(presentSite, oldSite)]) {
+      const h = harness({
+        ...standardScript(),
+        SearchLocation: [
+          (variables: any) => (variables.request.name === 'Hairmyres' ? reply : locationResponder(variables)),
+        ],
+      })
+      const result = await h.client.searchFares({ ...BASE_QUERY, from: 'HMY' })
+      expect(result.origin.id).toBe('319214')
+      const start = h.calls.find((c) => c.operationName === 'SearchJourneys')
+      expect(start?.variables.request.origin.id).toBe('319214')
+    }
+  })
+
+  it('takes the one entry left when a twice-listed station is listed once', async () => {
+    // Deliberate: with one entry left there is nothing to choose between, even though this is
+    // the entry that had no trains when both were listed. The live check reports the change.
     const h = harness({
       ...standardScript(),
       SearchLocation: [
         (variables: any) =>
           variables.request.name === 'Hairmyres'
-            ? replyWith(oldSite, stationAt('HMY', 'Hairmyres', '17446119'))
+            ? replyWith(stationAt('HMY', 'Hairmyres', '17446119'))
             : locationResponder(variables),
       ],
     })
     const result = await h.client.searchFares({ ...BASE_QUERY, from: 'HMY' })
     expect(result.origin.id).toBe('17446119')
+  })
+
+  it('refuses a twice-listed station when the entry it names is gone', async () => {
+    const position = getStationPosition('HMY')
+    if (!position) throw new Error('no position for HMY')
+    const moved = { ...stationAt('HMY', 'Hairmyres', '999001'), latitude: position.latitude + 0.0056 }
+    const h = harness({
+      ...standardScript(),
+      SearchLocation: [
+        (variables: any) =>
+          variables.request.name === 'Hairmyres'
+            ? replyWith(moved, stationAt('HMY', 'Hairmyres', '999002'))
+            : locationResponder(variables),
+      ],
+    })
+    await expect(h.client.searchFares({ ...BASE_QUERY, from: 'HMY' })).rejects.toThrow(
+      /more than one British station with that name came back, and they cannot be told apart/,
+    )
+    expect(h.calls.some((c) => c.operationName === 'SearchJourneys')).toBe(false)
   })
 
   it('finds a renamed station in the reply to its other name', async () => {

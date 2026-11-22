@@ -3,7 +3,7 @@
 // stores under a different name from the station table are in omio-station-names.ts.
 
 import type { OmioLocation } from './omio-parse.js';
-import { OMIO_STATION_NAMES } from './omio-station-names.js';
+import { OMIO_STATION_ENTRIES, OMIO_STATION_NAMES } from './omio-station-names.js';
 
 export interface GeoPoint {
   latitude: number;
@@ -14,10 +14,6 @@ export interface GeoPoint {
 // within about 300 metres of their listed position; a namesake that is another
 // place is tens of kilometres away.
 const STATION_POSITION_TOLERANCE_KM = 1;
-// When two same-named stations both stand near enough, the nearer one is taken
-// only if the other is at least this much further away. Seen live: a station
-// that moved is listed at its old and its new site, 600 metres apart.
-const CLEARLY_NEARER_KM = 0.25;
 const EARTH_RADIUS_KM = 6371;
 
 export interface OmioStationLookup {
@@ -25,6 +21,8 @@ export interface OmioStationLookup {
   names: string[];
   /** Where the station is, when known: a result elsewhere is not it. */
   near: GeoPoint | null;
+  /** Which entry to take when the station is listed more than once there, when known. */
+  entryId: string | null;
 }
 
 /**
@@ -32,12 +30,13 @@ export interface OmioStationLookup {
  * search under the station table's name. For the ones in OMIO_STATION_NAMES
  * the stored name is tried first and the table's name second, so the code
  * keeps resolving if the search is ever brought into line with the table.
- * Either way a result only counts when it stands at `position`.
+ * Either way a result only counts when it stands at `position`. For a station
+ * the search lists twice there, OMIO_STATION_ENTRIES says which entry to use.
  */
 export function omioStationLookup(crs: string, tableName: string, position: GeoPoint | null): OmioStationLookup {
   const storedName = OMIO_STATION_NAMES[crs.toUpperCase()];
   const names = storedName === undefined || storedName === tableName ? [tableName] : [storedName, tableName];
-  return { names, near: position };
+  return { names, near: position, entryId: OMIO_STATION_ENTRIES[crs.toUpperCase()] ?? null };
 }
 
 /** Great-circle distance between two points, in kilometres. */
@@ -130,16 +129,16 @@ export function stationCandidates(
 
 /**
  * The one station among the candidates that a station code stands for, or null
- * when they cannot be told apart. A single candidate is it. Of several, the
- * one clearly nearest to where the station is known to be is taken; without a
- * known position, or when they are about equally near, none is.
+ * when they cannot be told apart. A single candidate is it. Of several, only
+ * the entry known to be the one to search from (`entryId`) is taken. Nothing
+ * in a search result says which of two entries has the trains, and the nearer
+ * one is no guide: seen live, the entry at a moved station's present site had
+ * none. So without a known entry, or when it is not among them, none is taken.
  */
-export function chooseStation(candidates: readonly OmioLocation[], near: GeoPoint | null): OmioLocation | null {
+export function chooseStation(candidates: readonly OmioLocation[], entryId: string | null): OmioLocation | null {
   if (candidates.length <= 1) return candidates[0] ?? null;
-  if (near === null) return null;
-  const [nearest, runnerUp] = [...candidates].sort((a, b) => distanceKm(a, near) - distanceKm(b, near));
-  if (!nearest || !runnerUp) return null;
-  return distanceKm(runnerUp, near) - distanceKm(nearest, near) >= CLEARLY_NEARER_KM ? nearest : null;
+  if (entryId === null) return null;
+  return candidates.find((candidate) => candidate.id === entryId) ?? null;
 }
 
 /**
@@ -160,9 +159,9 @@ export type LocationMatch = 'crs' | 'exact' | 'free';
  * "London Waterloo"), and neither is a shorter one. The wanted name therefore
  * has to be the full name the search stores: the station table's name, or the
  * entry in OMIO_STATION_NAMES where the two differ. When `near` is given, the
- * station must also be there. And if two stations qualify, the one clearly
- * nearer to that place is taken, and neither when they cannot be told apart
- * (see chooseStation). The caller passes everything its lookup of that name
+ * station must also be there. And if two stations qualify, only the entry
+ * named by `entryId` is taken, and neither when there is no such entry (see
+ * chooseStation). The caller passes everything its lookup of that name
  * returned, so the count covers every spelling tried.
  *
  * For `free` text an exact name wins, otherwise the API's own first suggestion
@@ -173,10 +172,11 @@ export function pickLocation(
   name: string,
   match: LocationMatch,
   near: GeoPoint | null = null,
+  entryId: string | null = null,
 ): OmioLocation | null {
   const wanted = comparableName(name);
   const isExact = (location: OmioLocation): boolean => comparableName(location.name) === wanted;
-  if (match === 'crs') return chooseStation(stationCandidates(locations, name, near), near);
+  if (match === 'crs') return chooseStation(stationCandidates(locations, name, near), entryId);
 
   const exactStation = locations.find((location) => location.type === 'station' && isExact(location));
   if (exactStation) return exactStation;

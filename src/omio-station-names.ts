@@ -1,6 +1,6 @@
 // What the Uber Travel (Omio-backed) location search calls the stations it
-// stores under another name than the station table, and which stations it does
-// not have at all.
+// stores under another name than the station table, which entry to use for a
+// station it lists twice, and which stations it does not have at all.
 //
 // Found in November 2026 by looking every station in the table up against the
 // live search, by name and by position. A name below is the name of the result
@@ -11,9 +11,20 @@
 // are stored as "town, station" ("Walsall, Darlaston"); trains were found from
 // those three, so they are stations and not coach stops.
 //
+// One station is listed twice under its own name, at the site it moved from
+// and at its present one. Fare searches were run from both entries, and
+// OMIO_STATION_ENTRIES names the one that returned trains.
+//
+// A station that resolves need not have trains. In November 2026 the three
+// Heathrow stations (HXX, HAF, HWV) each had one entry, and searches from them
+// to London Paddington and Birmingham New Street, and from Paddington to HXX,
+// returned no trains. There is no other entry to use for them.
+//
 // This is a snapshot of someone else's data. The opt-in check in
 // test/omio.live.test.ts looks every station up again and lists the ones that
-// no longer resolve, which is how to find what to change here.
+// no longer resolve or that resolve to another entry than the one named
+// here, and searches for trains from each station with a named entry. That
+// is how to find what to change here.
 
 /** Station code to the name the location search stores that station under. */
 export const OMIO_STATION_NAMES: Readonly<Record<string, string>> = {
@@ -68,6 +79,21 @@ export const OMIO_STATION_NAMES: Readonly<Record<string, string>> = {
   UNI: 'University',
   WCH: 'Whitchurch',
   WNE: 'Wilnecote (Staffs)',
+};
+
+/**
+ * Station code to the id of the entry to search from, for a station the
+ * location search lists more than once under one name in the same place.
+ * Hairmyres is listed at its present site and, 600 metres away, at the site it
+ * moved from. In November 2026 the entry at the present site returned no
+ * trains at all and the older entry returned the station's trains.
+ *
+ * If the search stops listing the named entry, the one entry left is used.
+ * The opt-in check in test/omio.live.test.ts fails when a station here no
+ * longer resolves to its named entry, or when no trains are found from it.
+ */
+export const OMIO_STATION_ENTRIES: Readonly<Record<string, string>> = {
+  HMY: '319214',
 };
 
 /**
