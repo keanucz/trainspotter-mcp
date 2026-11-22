@@ -1,0 +1,201 @@
+{
+  "data": {
+    "GetDiscountCards": {
+      "discountCards": [
+        {
+          "id": "2TR",
+          "provider": "assertis",
+          "providerName": "UK Railcard",
+          "discountName": "Two Together Railcard",
+          "multipleSelection": false,
+          "logoUrl": "https://static.omio.design/web/logos/31/assertis.png",
+          "isNumberRequired": false,
+          "numberPrefix": "",
+          "numberValidationRegex": "",
+          "__typename": "DiscountCardResult"
+        },
+        {
+          "id": "DIC",
+          "provider": "assertis",
+          "providerName": "UK Railcard",
+          "discountName": "Disabled Child Railcard",
+          "multipleSelection": false,
+          "logoUrl": "https://static.omio.design/web/logos/31/assertis.png",
+          "isNumberRequired": false,
+          "numberPrefix": "",
+          "numberValidationRegex": "",
+          "__typename": "DiscountCardResult"
+        },
+        {
+          "id": "DIS",
+          "provider": "assertis",
+          "providerName": "UK Railcard",
+          "discountName": "Disabled Persons Railcard",
+          "multipleSelection": false,
+          "logoUrl": "https://static.omio.design/web/logos/31/assertis.png",
+          "isNumberRequired": false,
+          "numberPrefix": "",
+          "numberValidationRegex": "",
+          "__typename": "DiscountCardResult"
+        },
+        {
+          "id": "FAM",
+          "provider": "assertis",
+          "providerName": "UK Railcard",
+          "discountName": "Family & Friends Railcard",
+          "multipleSelection": false,
+          "logoUrl": "https://static.omio.design/web/logos/31/assertis.png",
+          "isNumberRequired": false,
+          "numberPrefix": "",
+          "numberValidationRegex": "",
+          "__typename": "DiscountCardResult"
+        },
+        {
+          "id": "HMF",
+          "provider": "assertis",
+          "providerName": "UK Railcard",
+          "discountName": "HM Forces Railcard",
+          "multipleSelection": false,
+          "logoUrl": "https://static.omio.design/web/logos/31/assertis.png",
+          "isNumberRequired": false,
+          "numberPrefix": "",
+          "numberValidationRegex": "",
+          "__typename": "DiscountCardResult"
+        },
+        {
+          "id": "JCP",
+          "provider": "assertis",
+          "providerName": "UK Railcard",
+          "discountName": "Jobcentre Plus Travel Discount Card",
+          "multipleSelection": false,
+          "logoUrl": "https://static.omio.design/web/logos/31/assertis.png",
+          "isNumberRequired": false,
+          "numberPrefix": "",
+          "numberValidationRegex": "",
+          "__typename": "DiscountCardResult"
+        },
+        {
+          "id": "NEW",
+          "provider": "assertis",
+          "providerName": "UK Railcard",
+          "discountName": "Network Railcard",
+          "multipleSelection": false,
+          "logoUrl": "https://static.omio.design/web/logos/31/assertis.png",
+          "isNumberRequired": false,
+          "numberPrefix": "",
+          "numberValidationRegex": "",
+          "__typename": "DiscountCardResult"
+        },
+        {
+          "id": "NGC",
+          "provider": "assertis",
+          "providerName": "UK Railcard",
+          "discountName": "Gold Card",
+          "multipleSelection": false,
+          "logoUrl": "https://static.omio.design/web/logos/31/assertis.png",
+          "isNumberRequired": false,
+          "numberPrefix": "",
+          "numberValidationRegex": "",
+          "__typename": "DiscountCardResult"
+        },
+        {
+          "id": "SRN",
+          "provider": "assertis",
+          "providerName": "UK Railcard",
+          "discountName": "Senior Railcard",
+          "multipleSelection": false,
+          "logoUrl": "https://static.omio.design/web/logos/31/assertis.png",
+          "isNumberRequired": false,
+          "numberPrefix": "",
+          "numberValidationRegex": "",
+          "__typename": "DiscountCardResult"
+        },
+        {
+          "id": "TST",
+          "provider": "assertis",
+          "providerName": "UK Railcard",
+          "discountName": "26-30 Railcard",
+          "multipleSelection": false,
+          "logoUrl": "https://static.omio.design/web/logos/31/assertis.png",
+          "isNumberRequired": false,
+          "numberPrefix": "",
+          "numberValidationRegex": "",
+          "__typename": "DiscountCardResult"
+        },
+        {
+          "id": "TSU",
+          "provider": "assertis",
+          "providerName": "UK Railcard",
+          "discountName": "16-17 Saver",
+          "multipleSelection": false,
+          "logoUrl": "https://static.omio.design/web/logos/31/assertis.png",
+          "isNumberRequired": false,
+          "numberPrefix": "",
+          "numberValidationRegex": "",
+          "__typename": "DiscountCardResult"
+        },
+        {
+          "id": "VET",
+          "provider": "assertis",
+          "providerName": "UK Railcard",
+          "discountName": "Veterans Railcard",
+          "multipleSelection": false,
+          "logoUrl": "https://static.omio.design/web/logos/31/assertis.png",
+          "isNumberRequired": false,
+          "numberPrefix": "",
+          "numberValidationRegex": "",
+          "__typename": "DiscountCardResult"
+        },
+        {
+          "id": "YNG",
+          "provider": "assertis",
+          "providerName": "UK Railcard",
+          "discountName": "16-25 Railcard",
+          "multipleSelection": false,
+          "logoUrl": "https://static.omio.design/web/logos/31/assertis.png",
+          "isNumberRequired": false,
+          "numberPrefix": "",
+          "numberValidationRegex": "",
+          "__typename": "DiscountCardResult"
+        },
+        {
+          "id": "NEX_DIS",
+          "provider": "nexConnect",
+          "providerName": "National Express",
+          "discountName": "Disabled Coachcard",
+          "multipleSelection": false,
+          "logoUrl": "https://static.omio.design/web/logos/31/nex.png",
+          "isNumberRequired": false,
+          "numberPrefix": "",
+          "numberValidationRegex": "",
+          "__typename": "DiscountCardResult"
+        },
+        {
+          "id": "NEX_SEN",
+          "provider": "nexConnect",
+          "providerName": "National Express",
+          "discountName": "Senior Coachcard (60+)",
+          "multipleSelection": false,
+          "logoUrl": "https://static.omio.design/web/logos/31/nex.png",
+          "isNumberRequired": false,
+          "numberPrefix": "",
+          "numberValidationRegex": "",
+          "__typename": "DiscountCardResult"
+        },
+        {
+          "id": "NEX_YNG",
+          "provider": "nexConnect",
+          "providerName": "National Express",
+          "discountName": "Young Persons Coachcard (16-26)",
+          "multipleSelection": false,
+          "logoUrl": "https://static.omio.design/web/logos/31/nex.png",
+          "isNumberRequired": false,
+          "numberPrefix": "",
+          "numberValidationRegex": "",
+          "__typename": "DiscountCardResult"
+        }
+      ],
+      "__typename": "GetDiscountCardsResponse"
+    }
+  }
+}

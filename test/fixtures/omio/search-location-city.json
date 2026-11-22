@@ -1,0 +1,139 @@
+{
+  "data": {
+    "SearchLocation": {
+      "locations": [
+        {
+          "id": "380540",
+          "countryCode": "GB",
+          "latitude": 53.41058,
+          "longitude": -2.97794,
+          "name": "Liverpool",
+          "type": "location",
+          "translatedName": "Liverpool",
+          "__typename": "SearchLocation"
+        },
+        {
+          "id": "319636",
+          "countryCode": "GB",
+          "latitude": 51.5183801,
+          "longitude": -0.0816928,
+          "name": "London Liverpool Street",
+          "type": "station",
+          "translatedName": "London Liverpool Street",
+          "__typename": "SearchLocation"
+        },
+        {
+          "id": "319584",
+          "countryCode": "GB",
+          "latitude": 53.4077014895,
+          "longitude": -2.97598656063,
+          "name": "Liverpool Lime Street",
+          "type": "station",
+          "translatedName": "Liverpool Lime Street",
+          "__typename": "SearchLocation"
+        },
+        {
+          "id": "319585",
+          "countryCode": "GB",
+          "latitude": 53.35784539507004,
+          "longitude": -2.889499696572898,
+          "name": "Liverpool South Parkway",
+          "type": "station",
+          "translatedName": "Liverpool South Parkway",
+          "__typename": "SearchLocation"
+        },
+        {
+          "id": "319583",
+          "countryCode": "GB",
+          "latitude": 53.4042885,
+          "longitude": -2.9796107,
+          "name": "Liverpool Central",
+          "type": "station",
+          "translatedName": "Liverpool Central",
+          "__typename": "SearchLocation"
+        },
+        {
+          "id": "319426",
+          "countryCode": "GB",
+          "latitude": 53.40498841368932,
+          "longitude": -2.992212248061983,
+          "name": "Liverpool James Street",
+          "type": "station",
+          "translatedName": "Liverpool James Street",
+          "__typename": "SearchLocation"
+        },
+        {
+          "id": "315114",
+          "countryCode": "GB",
+          "latitude": 53.33717,
+          "longitude": -2.854246,
+          "name": "Liverpool John Lennon Airport",
+          "type": "airport",
+          "translatedName": "Liverpool John Lennon Airport",
+          "__typename": "SearchLocation"
+        },
+        {
+          "id": "16903601",
+          "countryCode": "GB",
+          "latitude": 53.337747339812644,
+          "longitude": -2.854342460632324,
+          "name": "Liverpool, John Lennon Airport",
+          "type": "station",
+          "translatedName": "Liverpool, John Lennon Airport",
+          "__typename": "SearchLocation"
+        },
+        {
+          "id": "16895943",
+          "countryCode": "GB",
+          "latitude": 53.40251441432397,
+          "longitude": -3.017953748626716,
+          "name": "Liverpool (Birkenhead)",
+          "type": "ferry_terminal",
+          "translatedName": "Liverpool (Port of Birkenhead)",
+          "__typename": "SearchLocation"
+        },
+        {
+          "id": "17200821",
+          "countryCode": "GB",
+          "latitude": 53.40041,
+          "longitude": -3.01044,
+          "name": "Port of Liverpool (Stena Lines)",
+          "type": "ferry_terminal",
+          "translatedName": "Stena Line - Liverpool",
+          "__typename": "SearchLocation"
+        },
+        {
+          "id": "17259487",
+          "countryCode": "GB",
+          "latitude": 53.44528609735812,
+          "longitude": -3.008494393461152,
+          "name": "Liverpool (Seatruck Terminal)",
+          "type": "ferry_terminal",
+          "translatedName": "Liverpool (Seatruck Terminal)",
+          "__typename": "SearchLocation"
+        },
+        {
+          "id": "17435180",
+          "countryCode": "GB",
+          "latitude": 53.4581313,
+          "longitude": -3.0162538,
+          "name": "P&O Ferries Liverpool",
+          "type": "ferry_terminal",
+          "translatedName": "P&O Ferries Liverpool",
+          "__typename": "SearchLocation"
+        },
+        {
+          "id": "16903621",
+          "countryCode": "GB",
+          "latitude": 53.404543175162466,
+          "longitude": -2.9972827434539795,
+          "name": "Liverpool Pier Head Ferry Terminal",
+          "type": "station",
+          "translatedName": "Liverpool Pier Head Ferry Terminal",
+          "__typename": "SearchLocation"
+        }
+      ],
+      "__typename": "SearchLocationResponse"
+    }
+  }
+}

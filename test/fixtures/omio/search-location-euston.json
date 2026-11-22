@@ -1,0 +1,19 @@
+{
+  "data": {
+    "SearchLocation": {
+      "locations": [
+        {
+          "id": "319631",
+          "countryCode": "GB",
+          "latitude": 51.52809902784242,
+          "longitude": -0.13317672404014,
+          "name": "London Euston",
+          "type": "station",
+          "translatedName": "London Euston",
+          "__typename": "SearchLocation"
+        }
+      ],
+      "__typename": "SearchLocationResponse"
+    }
+  }
+}

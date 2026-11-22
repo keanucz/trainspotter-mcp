@@ -1,0 +1,62 @@
+{
+  "data": {
+    "ExtendSearchWithoutQuotes": {
+      "booking": {
+        "id": "",
+        "currency": "CURRENCY_GBP",
+        "searchId": "TEST00000000000000000000000000001",
+        "status": "SEARCH_STATUS_RUNNING",
+        "journeys": [],
+        "extensionOptions": [
+          {
+            "travelMode": "TRAVEL_MODE_TRAIN",
+            "inboundEarlier": false,
+            "inboundLater": false,
+            "outboundEarlier": true,
+            "outboundLater": true,
+            "currentIntervals": {
+              "inbound": [],
+              "outbound": [
+                {
+                  "start": "06:00",
+                  "end": "08:22",
+                  "__typename": "ExtendInterval"
+                }
+              ],
+              "__typename": "ExtendCurrentIntervals"
+            },
+            "__typename": "ExtensionOptions"
+          }
+        ],
+        "carriers": [
+          {
+            "id": "1",
+            "logoUrl": "https://static.omio.design/web/logos/{size}/transport_for_wales.png",
+            "name": "Transport for Wales",
+            "__typename": "Carrier"
+          },
+          {
+            "id": "16",
+            "logoUrl": "https://static.omio.design/web/logos/{size}/west_midlands_rail.png",
+            "name": "West Midlands Trains",
+            "__typename": "Carrier"
+          },
+          {
+            "id": "28",
+            "logoUrl": "https://static.omio.design/web/logos/{size}/avanti_west_coast.png",
+            "name": "Avanti West Coast",
+            "__typename": "Carrier"
+          },
+          {
+            "id": "1083",
+            "logoUrl": "https://static.omio.design/web/logos/{size}/national_express.png",
+            "name": "National Express",
+            "__typename": "Carrier"
+          }
+        ],
+        "__typename": "BookingSearchWithoutQuotes"
+      },
+      "__typename": "SearchJourneysResponse"
+    }
+  }
+}

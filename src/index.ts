@@ -13,6 +13,7 @@ import { createHspClient } from './hsp.js';
 import { createFaresClient } from './fares.js';
 import { createTimetableClient } from './timetable.js';
 import { createRttClient, formatRttDepartures, formatRttService } from './rtt.js';
+import { omioTools, isOmioTool, handleOmioTool } from './omio-tools.js';
 import { recordFaresCall, getUsageStatus, canMakeFaresCall } from './usage.js';
 import { getStationName, findStation, isValidCrs } from './stations.js';
 import type { StationBoard, ServiceDetails, HspMetrics, FaresResponse } from './types.js';
@@ -308,10 +309,14 @@ const server = new Server(
   { capabilities: { tools: {} } }
 );
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
+server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...tools, ...omioTools] }));
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
+
+  if (isOmioTool(name)) {
+    return handleOmioTool(name, args);
+  }
 
   switch (name) {
     case 'get_departures': {

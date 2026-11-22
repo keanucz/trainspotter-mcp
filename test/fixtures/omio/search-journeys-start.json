@@ -1,0 +1,19 @@
+{
+  "data": {
+    "SearchJourneys": {
+      "booking": {
+        "id": "",
+        "currency": "CURRENCY_GBP",
+        "searchId": "TEST00000000000000000000000000001",
+        "status": "SEARCH_STATUS_RUNNING",
+        "journeys": [],
+        "extensionOptions": [],
+        "carriers": [],
+        "searchDisclaimers": [],
+        "__typename": "BookingSearchWithoutQuotes"
+      },
+      "replacementRequests": [],
+      "__typename": "SearchJourneysResponse"
+    }
+  }
+}

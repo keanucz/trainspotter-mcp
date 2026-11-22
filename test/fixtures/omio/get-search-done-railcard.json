@@ -1,0 +1,330 @@
+{
+  "data": {
+    "GetSearchWithoutQuotes": {
+      "booking": {
+        "id": "",
+        "currency": "CURRENCY_GBP",
+        "searchId": "TEST00000000000000000000000000001",
+        "status": "SEARCH_STATUS_DONE",
+        "journeys": [
+          {
+            "segmentIds": [
+              "-195620066",
+              "1436336130"
+            ],
+            "cheapestPriceCents": 3330,
+            "promotionCents": 0,
+            "priceDifferenceWithOriginalJourney": 0,
+            "originalPriceCents": 0,
+            "discounts": [
+              {
+                "discountTypes": [
+                  "DISCOUNT_TYPE_DISCOUNT_CARD"
+                ],
+                "totalValueInCents": 1680,
+                "discountBreakdown": {
+                  "outbound": {
+                    "valueInCents": 1680,
+                    "title": "",
+                    "__typename": "LegBreakdownValue"
+                  },
+                  "inbound": null,
+                  "__typename": "DiscountBreakdown"
+                },
+                "__typename": "Discount"
+              }
+            ],
+            "id": "1547422257",
+            "return": null,
+            "departure": {
+              "segments": [
+                {
+                  "arrival": {
+                    "countryCode": "GB",
+                    "id": "320331",
+                    "name": "Stafford",
+                    "type": "station",
+                    "latitude": 52.8038977,
+                    "longitude": -2.1223715,
+                    "__typename": "Location"
+                  },
+                  "arrivalTime": {
+                    "timestamp": "2027-01-30T07:09:00",
+                    "timezone": "+00:00",
+                    "__typename": "Time"
+                  },
+                  "carrierId": "16",
+                  "departure": {
+                    "countryCode": "GB",
+                    "id": "319585",
+                    "name": "Liverpool South Parkway",
+                    "type": "station",
+                    "latitude": 53.35784539507004,
+                    "longitude": -2.889499696572898,
+                    "__typename": "Location"
+                  },
+                  "departureTime": {
+                    "timestamp": "2027-01-30T06:19:00",
+                    "timezone": "+00:00",
+                    "__typename": "Time"
+                  },
+                  "direction": "SEGMENT_DIRECTION_DEPARTURE",
+                  "durationMinutes": 50,
+                  "id": "-195620066",
+                  "transportId": "G43620",
+                  "travelMode": "TRAVEL_MODE_TRAIN",
+                  "noChange": false,
+                  "tags": [],
+                  "__typename": "RideSegment"
+                },
+                {
+                  "arrival": {
+                    "countryCode": "GB",
+                    "id": "319631",
+                    "name": "London Euston",
+                    "type": "station",
+                    "latitude": 51.52809902784242,
+                    "longitude": -0.13317672404014,
+                    "__typename": "Location"
+                  },
+                  "arrivalTime": {
+                    "timestamp": "2027-01-30T08:35:00",
+                    "timezone": "+00:00",
+                    "__typename": "Time"
+                  },
+                  "carrierId": "28",
+                  "departure": {
+                    "countryCode": "GB",
+                    "id": "320331",
+                    "name": "Stafford",
+                    "type": "station",
+                    "latitude": 52.8038977,
+                    "longitude": -2.1223715,
+                    "__typename": "Location"
+                  },
+                  "departureTime": {
+                    "timestamp": "2027-01-30T07:14:00",
+                    "timezone": "+00:00",
+                    "__typename": "Time"
+                  },
+                  "direction": "SEGMENT_DIRECTION_DEPARTURE",
+                  "durationMinutes": 81,
+                  "id": "1436336130",
+                  "transportId": "G05205",
+                  "travelMode": "TRAVEL_MODE_TRAIN",
+                  "noChange": false,
+                  "tags": [],
+                  "__typename": "RideSegment"
+                }
+              ],
+              "arrivalTime": {
+                "timestamp": "2027-01-30T08:35:00",
+                "timezone": "+00:00",
+                "__typename": "Time"
+              },
+              "carrier": {
+                "id": "28",
+                "logoUrl": "https://static.omio.design/web/logos/{size}/avanti_west_coast.png",
+                "name": "Avanti West Coast",
+                "__typename": "Carrier"
+              },
+              "departureTime": {
+                "timestamp": "2027-01-30T06:19:00",
+                "timezone": "+00:00",
+                "__typename": "Time"
+              },
+              "routedConnection": false,
+              "travelMode": "TRAVEL_MODE_TRAIN",
+              "id": "-7035076917899586956",
+              "carrierId": "28",
+              "durationMinutes": 136,
+              "mobileTicketSupported": true,
+              "overtakenByJourneyCount": 0,
+              "inboundId": "",
+              "split": {
+                "savingCents": 1980,
+                "__typename": "Split"
+              },
+              "availability": {
+                "displayMode": "DISPLAY_MODE_DONT_DISPLAY",
+                "totalTicketsLeft": 9,
+                "__typename": "Availability"
+              },
+              "isAlternativeDeparture": false,
+              "isAlternativeArrival": false,
+              "distanceFromOriginalDepartureInKm": 0,
+              "distanceFromOriginalArrivalInKm": 0,
+              "isBundledPrice": false,
+              "__typename": "Destination"
+            },
+            "journeyType": "JOURNEY_TYPE_UNKNOWN",
+            "__typename": "JourneyWithoutQuotes",
+            "splitJourneys": []
+          },
+          {
+            "segmentIds": [
+              "-1774300708"
+            ],
+            "cheapestPriceCents": 1730,
+            "promotionCents": 0,
+            "priceDifferenceWithOriginalJourney": 0,
+            "originalPriceCents": 0,
+            "discounts": [
+              {
+                "discountTypes": [
+                  "DISCOUNT_TYPE_DISCOUNT_CARD"
+                ],
+                "totalValueInCents": 870,
+                "discountBreakdown": {
+                  "outbound": {
+                    "valueInCents": 870,
+                    "title": "",
+                    "__typename": "LegBreakdownValue"
+                  },
+                  "inbound": null,
+                  "__typename": "DiscountBreakdown"
+                },
+                "__typename": "Discount"
+              }
+            ],
+            "id": "-1087181446",
+            "return": null,
+            "departure": {
+              "segments": [
+                {
+                  "arrival": {
+                    "countryCode": "GB",
+                    "id": "319631",
+                    "name": "London Euston",
+                    "type": "station",
+                    "latitude": 51.52809902784242,
+                    "longitude": -0.13317672404014,
+                    "__typename": "Location"
+                  },
+                  "arrivalTime": {
+                    "timestamp": "2027-01-30T09:04:00",
+                    "timezone": "+00:00",
+                    "__typename": "Time"
+                  },
+                  "carrierId": "28",
+                  "departure": {
+                    "countryCode": "GB",
+                    "id": "319585",
+                    "name": "Liverpool South Parkway",
+                    "type": "station",
+                    "latitude": 53.35784539507004,
+                    "longitude": -2.889499696572898,
+                    "__typename": "Location"
+                  },
+                  "departureTime": {
+                    "timestamp": "2027-01-30T06:54:00",
+                    "timezone": "+00:00",
+                    "__typename": "Time"
+                  },
+                  "direction": "SEGMENT_DIRECTION_DEPARTURE",
+                  "durationMinutes": 130,
+                  "id": "-1774300708",
+                  "transportId": "G05211",
+                  "travelMode": "TRAVEL_MODE_TRAIN",
+                  "noChange": false,
+                  "tags": [],
+                  "__typename": "RideSegment"
+                }
+              ],
+              "arrivalTime": {
+                "timestamp": "2027-01-30T09:04:00",
+                "timezone": "+00:00",
+                "__typename": "Time"
+              },
+              "carrier": {
+                "id": "28",
+                "logoUrl": "https://static.omio.design/web/logos/{size}/avanti_west_coast.png",
+                "name": "Avanti West Coast",
+                "__typename": "Carrier"
+              },
+              "departureTime": {
+                "timestamp": "2027-01-30T06:54:00",
+                "timezone": "+00:00",
+                "__typename": "Time"
+              },
+              "routedConnection": false,
+              "travelMode": "TRAVEL_MODE_TRAIN",
+              "id": "8938400411856430344",
+              "carrierId": "28",
+              "durationMinutes": 130,
+              "mobileTicketSupported": true,
+              "overtakenByJourneyCount": 0,
+              "inboundId": "",
+              "split": null,
+              "availability": {
+                "displayMode": "DISPLAY_MODE_DONT_DISPLAY",
+                "totalTicketsLeft": 9,
+                "__typename": "Availability"
+              },
+              "isAlternativeDeparture": false,
+              "isAlternativeArrival": false,
+              "distanceFromOriginalDepartureInKm": 0,
+              "distanceFromOriginalArrivalInKm": 0,
+              "isBundledPrice": false,
+              "__typename": "Destination"
+            },
+            "journeyType": "JOURNEY_TYPE_UNKNOWN",
+            "__typename": "JourneyWithoutQuotes",
+            "splitJourneys": []
+          }
+        ],
+        "extensionOptions": [
+          {
+            "travelMode": "TRAVEL_MODE_TRAIN",
+            "inboundEarlier": false,
+            "inboundLater": false,
+            "outboundEarlier": true,
+            "outboundLater": true,
+            "currentIntervals": {
+              "inbound": [],
+              "outbound": [
+                {
+                  "start": "06:00",
+                  "end": "08:22",
+                  "__typename": "ExtendInterval"
+                }
+              ],
+              "__typename": "ExtendCurrentIntervals"
+            },
+            "__typename": "ExtensionOptions"
+          }
+        ],
+        "carriers": [
+          {
+            "id": "1",
+            "logoUrl": "https://static.omio.design/web/logos/{size}/transport_for_wales.png",
+            "name": "Transport for Wales",
+            "__typename": "Carrier"
+          },
+          {
+            "id": "1083",
+            "logoUrl": "https://static.omio.design/web/logos/{size}/national_express.png",
+            "name": "National Express",
+            "__typename": "Carrier"
+          },
+          {
+            "id": "16",
+            "logoUrl": "https://static.omio.design/web/logos/{size}/west_midlands_rail.png",
+            "name": "West Midlands Trains",
+            "__typename": "Carrier"
+          },
+          {
+            "id": "28",
+            "logoUrl": "https://static.omio.design/web/logos/{size}/avanti_west_coast.png",
+            "name": "Avanti West Coast",
+            "__typename": "Carrier"
+          }
+        ],
+        "searchDisclaimers": [],
+        "__typename": "BookingSearchWithoutQuotes"
+      },
+      "replacementRequests": [],
+      "__typename": "SearchJourneysResponse"
+    }
+  }
+}
