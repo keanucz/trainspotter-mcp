@@ -111,6 +111,7 @@ describe('normalizeFareQuery', () => {
       modes: ['train', 'coach'],
       railcard: null,
       age: 30,
+      hours: 4,
     })
   })
 
@@ -137,6 +138,9 @@ describe('normalizeFareQuery', () => {
     [{ railcards: ['YNG', 'SRN'] }, /one railcard/],
     [{ age: -1 }, /age/],
     [{ age: 17.5 }, /age/],
+    [{ hours: 0 }, /hours/],
+    [{ hours: 13 }, /hours/],
+    [{ hours: 2.5 }, /hours/],
   ])('rejects %j', (override, message) => {
     expect(() => normalizeFareQuery({ ...BASE_QUERY, ...override })).toThrow(message)
   })
@@ -204,6 +208,15 @@ describe('pickLocation', () => {
     expect(pickLocation(city, "liverpool  south-parkway", 'free')?.id).toBe('319585')
     expect(pickLocation([station("London King's Cross")], 'London Kings Cross', 'crs')?.name).toBe(
       "London King's Cross",
+    )
+  })
+
+  it('treats "&" and "and" as the same word', () => {
+    expect(pickLocation([station('Pontypool and New Inn')], 'Pontypool & New Inn', 'crs')?.name).toBe(
+      'Pontypool and New Inn',
+    )
+    expect(pickLocation([station('Hoveton & Wroxham')], 'Hoveton and Wroxham', 'exact')?.name).toBe(
+      'Hoveton & Wroxham',
     )
   })
 
@@ -311,9 +324,10 @@ describe('OmioClient.searchFares', () => {
     })
   })
 
-  it('polls once a second until the search is done, then asks for later trains twice', async () => {
+  it('polls once a second until the search is done, then asks for later trains until the hours are covered', async () => {
     const h = harness(standardScript())
-    const result = await h.client.searchFares(BASE_QUERY)
+    // Six hours from 06:00: the 08:22 and 10:22 windows fall short, 12:22 covers it.
+    const result = await h.client.searchFares({ ...BASE_QUERY, hours: 6 })
 
     expect(h.operations().slice(2)).toEqual([
       'SearchJourneys',
@@ -344,6 +358,87 @@ describe('OmioClient.searchFares', () => {
       extendTo: 'later',
       mode: 'SEARCH_MODE_INCREMENTAL',
     })
+  })
+
+  it('asks for four hours of trains by default', async () => {
+    const h = harness(standardScript())
+    const result = await h.client.searchFares(BASE_QUERY)
+    // 08:22 is short of 10:00, the next window (10:22) covers it.
+    expect(h.operations().filter((o) => o === 'ExtendSearchWithoutQuotes')).toHaveLength(1)
+    expect(result.trainWindow?.end).toBe('10:22')
+    expect(result.hours).toBe(4)
+    expect(result.complete).toBe(true)
+  })
+
+  it('does not ask for later trains when the first window already covers the hours', async () => {
+    const h = harness(standardScript())
+    const result = await h.client.searchFares({ ...BASE_QUERY, hours: 2 })
+    expect(h.operations()).not.toContain('ExtendSearchWithoutQuotes')
+    expect(result.trainWindow?.end).toBe('08:22')
+    expect(result.complete).toBe(true)
+  })
+
+  it('keeps asking until the end of the day when the hours run past midnight', async () => {
+    const h = harness({
+      ...standardScript(),
+      GetSearchWithoutQuotes: [doneWithWindow('21:30'), doneWithWindow('23:10'), doneWithWindow('00:20')],
+    })
+    const result = await h.client.searchFares({ ...BASE_QUERY, time: '20:00', hours: 12 })
+    expect(h.operations().filter((o) => o === 'ExtendSearchWithoutQuotes')).toHaveLength(2)
+    expect(result.trainWindow?.end).toBe('00:20')
+    expect(result.notes).toEqual([])
+  })
+
+  it('treats a window that reaches 23:59 as the end of the day', async () => {
+    const h = harness({
+      ...standardScript(),
+      GetSearchWithoutQuotes: [doneWithWindow('22:10'), doneWithWindow('23:59')],
+    })
+    const result = await h.client.searchFares({ ...BASE_QUERY, time: '20:00', hours: 12 })
+    // The window cannot go further without wrapping, so no second request is made.
+    expect(h.operations().filter((o) => o === 'ExtendSearchWithoutQuotes')).toHaveLength(1)
+    expect(result.complete).toBe(true)
+    expect(result.notes).toEqual([])
+  })
+
+  it('does not start a request for later trains it has no time left to finish', async () => {
+    // A search that needs its full 20 s to start leaves room for only a few later windows:
+    // each one needs a request (up to 10 s) plus a poll before the 35 s budget ends.
+    const slowStart = [
+      ...Array.from({ length: 19 }, () => loadOmioFixture('get-search-running')),
+      doneWithWindow('06:30'),
+      doneWithWindow('06:40'),
+      doneWithWindow('06:50'),
+      doneWithWindow('07:00'),
+      doneWithWindow('07:10'),
+      doneWithWindow('07:20'),
+    ]
+    const h = harness({ ...standardScript(), GetSearchWithoutQuotes: slowStart })
+    const result = await h.client.searchFares({ ...BASE_QUERY, hours: 12 })
+    expect(h.elapsed()).toBeLessThanOrEqual(35000)
+    expect(result.complete).toBe(false)
+    expect(result.notes.join(' ')).toMatch(/time budget for one search ran out/)
+    expect(result.journeys.length).toBeGreaterThan(0)
+  })
+
+  it('stops after ten requests for later trains and says so', async () => {
+    // Windows that creep forward five minutes at a time never cover twelve hours.
+    const creeping = Array.from({ length: 12 }, (_, step) =>
+      doneWithWindow(`07:${String(step * 5).padStart(2, '0')}`),
+    )
+    const h = harness({ ...standardScript(), GetSearchWithoutQuotes: creeping })
+    const result = await h.client.searchFares({ ...BASE_QUERY, hours: 12 })
+    expect(h.operations().filter((o) => o === 'ExtendSearchWithoutQuotes')).toHaveLength(10)
+    expect(result.trainWindow?.end).toBe('07:50')
+    expect(result.complete).toBe(false)
+    expect(result.notes.join(' ')).toMatch(/Stopped after 10 requests for later trains/)
+  })
+
+  it('caches searches for different hours separately', async () => {
+    const h = harness(standardScript())
+    await h.client.searchFares({ ...BASE_QUERY, hours: 2 })
+    const wider = await h.client.searchFares({ ...BASE_QUERY, hours: 4 })
+    expect(wider.cached).toBe(false)
   })
 
   it('drops journeys that leave before the requested time and sorts the rest', async () => {
@@ -387,7 +482,7 @@ describe('OmioClient.searchFares', () => {
         doneWithWindow('12:22'),
       ],
     })
-    const result = await h.client.searchFares(BASE_QUERY)
+    const result = await h.client.searchFares({ ...BASE_QUERY, hours: 6 })
     expect(result.trainWindow?.end).toBe('12:22')
     expect(result.complete).toBe(true)
     expect(result.notes).toEqual([])
@@ -572,7 +667,73 @@ describe('OmioClient.searchFares', () => {
     waterloo.data.SearchLocation.locations[0].name = 'London Waterloo'
     const h = harness({ ...standardScript(), SearchLocation: [waterloo] })
     await expect(h.client.searchFares({ ...BASE_QUERY, from: 'WAE' })).rejects.toThrow(
-      /No Uber Travel location found for "WAE" \(London Waterloo East\)/,
+      /No Uber Travel location found for "WAE" \(London Waterloo East\).*Uber Travel offers: London Waterloo\./,
+    )
+    expect(h.operations()).not.toContain('SearchJourneys')
+  })
+
+  // The live location search finds nothing for a query containing "&" or "and", and
+  // wants an apostrophe exactly where its own station name has one.
+  it.each([
+    ['HXM', ['Hoveton'], 'Hoveton & Wroxham'],
+    ['CHH', ["Christ's Hospital", 'Christs Hospital'], 'Christs Hospital'],
+    ['SPB', ["Shepherd's Bush"], "Shepherd's Bush"],
+    ['Harrow and Wealdstone', ['Harrow'], 'Harrow & Wealdstone'],
+  ])('searches for %s with terms the location search can answer', async (input, terms, uberName) => {
+    const found = loadOmioFixture('search-location-station')
+    found.data.SearchLocation.locations[0].name = uberName
+    found.data.SearchLocation.locations[0].id = '777'
+    const answered = terms[terms.length - 1]
+    const h = harness({
+      ...standardScript(),
+      SearchLocation: [
+        (variables: any) => (variables.request.name === answered ? found : locationResponder(variables)),
+      ],
+    })
+    const result = await h.client.searchFares({ ...BASE_QUERY, from: input })
+    const lookups = h.calls.filter((c) => c.operationName === 'SearchLocation').map((c) => c.variables.request.name)
+    expect(lookups).toEqual([...terms, 'London Euston'])
+    expect(result.origin).toMatchObject({ id: '777', name: uberName })
+  })
+
+  it('tries every spelling before settling for a first suggestion', async () => {
+    const exact = loadOmioFixture('search-location-station')
+    exact.data.SearchLocation.locations[0].name = 'Bishops Stortford'
+    exact.data.SearchLocation.locations[0].id = '888'
+    const h = harness({
+      ...standardScript(),
+      SearchLocation: [
+        (variables: any) =>
+          variables.request.name === 'Bishops Stortford'
+            ? exact
+            : variables.request.name === "Bishop's Stortford"
+              ? loadOmioFixture('search-location-city') // unrelated suggestions
+              : locationResponder(variables),
+      ],
+    })
+    const result = await h.client.searchFares({ ...BASE_QUERY, from: "Bishop's Stortford" })
+    expect(result.origin).toMatchObject({ id: '888', name: 'Bishops Stortford' })
+  })
+
+  it('names only British stations when a station code does not resolve', async () => {
+    const mixed = loadOmioFixture('search-location-city')
+    mixed.data.SearchLocation.locations = [
+      { ...mixed.data.SearchLocation.locations[1], name: 'Waterloo', type: 'station', countryCode: 'BE' },
+      { ...mixed.data.SearchLocation.locations[1], name: 'London Waterloo', type: 'station', countryCode: 'GB' },
+    ]
+    const h = harness({ ...standardScript(), SearchLocation: [mixed] })
+    const failure = await h.client.searchFares({ ...BASE_QUERY, from: 'WAE' }).catch((thrown: unknown) => thrown)
+    expect((failure as Error).message).toContain('Uber Travel offers: London Waterloo.')
+  })
+
+  it('does not settle for the first suggestion when the search term was shortened', async () => {
+    const h = harness({
+      ...standardScript(),
+      SearchLocation: [loadOmioFixture('search-location-city')],
+    })
+    // "Liverpool" is searched, but nothing is called "Liverpool & Nowhere".
+    await expect(h.client.searchFares({ ...BASE_QUERY, from: 'Liverpool & Nowhere' })).rejects.toThrow(
+      /No Uber Travel location found for "Liverpool & Nowhere"/,
     )
     expect(h.operations()).not.toContain('SearchJourneys')
   })
@@ -602,6 +763,72 @@ describe('OmioClient.searchFares', () => {
     const body = JSON.stringify({ errors: [{ message: 'Cannot query field "searchId" on type "Booking".' }] })
     const h = harness({ ...standardScript(), SearchJourneys: [new Response(body, { status: 400 })] })
     await expect(h.client.searchFares(BASE_QUERY)).rejects.toThrow(OmioSchemaError)
+  })
+
+  // The bodies below are what the live endpoint answered to deliberately broken requests.
+  it.each([
+    [
+      'a field the schema no longer has',
+      {
+        message: 'Cannot query field "nonexistentField" on type "SearchLocation".',
+        locations: [{ line: 1, column: 109 }],
+        extensions: { code: 'GRAPHQL_VALIDATION_FAILED' },
+      },
+    ],
+    [
+      'variables that no longer fit the input type',
+      {
+        message:
+          'Variable "$request" got invalid value { name: 123, bogus: true }; Field "bogus" is not defined by type "SearchLocation__Input".',
+        locations: [{ line: 1, column: 22 }],
+        extensions: { code: 'BAD_USER_INPUT' },
+      },
+    ],
+    [
+      'a query the server cannot parse',
+      { message: 'Syntax Error: Expected Name, found <EOF>.', extensions: { code: 'GRAPHQL_PARSE_FAILED' } },
+    ],
+    [
+      'a server that only accepts its own stored queries',
+      { message: 'PersistedQueryNotFound', extensions: { code: 'PERSISTED_QUERY_NOT_FOUND' } },
+    ],
+  ])('treats an HTTP 400 for %s as a schema change', async (_label, error) => {
+    const body = JSON.stringify({ errors: [error] })
+    const h = harness({ ...standardScript(), SearchJourneys: [new Response(body, { status: 400 })] })
+    const failure = await h.client.searchFares(BASE_QUERY).catch((thrown: unknown) => thrown)
+    expect(failure).toBeInstanceOf(OmioSchemaError)
+    expect((failure as Error).message).toContain(error.message.slice(0, 40))
+  })
+
+  it('reports an internal server error with its message, not as a schema change', async () => {
+    const body = JSON.stringify({
+      errors: [
+        {
+          message: 'Query SearchJourneys failed',
+          path: ['SearchJourneys'],
+          extensions: { code: 'INTERNAL_SERVER_ERROR', exception: { message: 'Query SearchJourneys failed' } },
+        },
+      ],
+      data: null,
+    })
+    const h = harness({ ...standardScript(), SearchJourneys: [new Response(body, { status: 500 })] })
+    const failure = await h.client.searchFares(BASE_QUERY).catch((thrown: unknown) => thrown)
+    expect(failure).not.toBeInstanceOf(OmioSchemaError)
+    expect((failure as Error).message).toBe(
+      'Uber Travel request failed (500) for SearchJourneys: Query SearchJourneys failed',
+    )
+  })
+
+  it('does not call a rejected search value a schema change', async () => {
+    const h = harness({
+      ...standardScript(),
+      SearchJourneys: [
+        { errors: [{ message: 'Departure time is in the past', extensions: { code: 'BAD_USER_INPUT' } }] },
+      ],
+    })
+    const failure = await h.client.searchFares(BASE_QUERY).catch((thrown: unknown) => thrown)
+    expect(failure).not.toBeInstanceOf(OmioSchemaError)
+    expect((failure as Error).message).toContain('Departure time is in the past')
   })
 
   it('validates input before making any request', async () => {

@@ -60,6 +60,31 @@ describe('parseSearchStart', () => {
     expect(() => parseSearchStart(body, 'SearchJourneys')).toThrow(/Cannot query field/)
   })
 
+  it('goes by the error code the server sends when there is one', () => {
+    const validation = {
+      errors: [{ message: 'Something new and unfamiliar', extensions: { code: 'GRAPHQL_VALIDATION_FAILED' } }],
+    }
+    expect(() => parseSearchStart(validation, 'SearchJourneys')).toThrow(OmioSchemaError)
+
+    // The wording looks like a validation error, but the server says it failed internally.
+    const internal = {
+      errors: [{ message: 'Cannot query field upstream', extensions: { code: 'INTERNAL_SERVER_ERROR' } }],
+    }
+    expect(() => parseSearchStart(internal, 'SearchJourneys')).not.toThrow(OmioSchemaError)
+    expect(() => parseSearchStart(internal, 'SearchJourneys')).toThrow(/Cannot query field upstream/)
+  })
+
+  it('finds a schema error behind another error in the same reply', () => {
+    const body = {
+      errors: [
+        { message: 'Query SearchJourneys failed', extensions: { code: 'INTERNAL_SERVER_ERROR' } },
+        { message: 'Unknown argument "request"', extensions: { code: 'GRAPHQL_VALIDATION_FAILED' } },
+      ],
+    }
+    expect(() => parseSearchStart(body, 'SearchJourneys')).toThrow(/Unknown argument "request"/)
+    expect(() => parseSearchStart(body, 'SearchJourneys')).toThrow(OmioSchemaError)
+  })
+
   it('passes any other GraphQL error through without calling it a schema change', () => {
     const body = { errors: [{ message: 'Internal server error' }], data: null }
     expect(() => parseSearchStart(body, 'SearchJourneys')).toThrow(
@@ -143,6 +168,14 @@ describe('parseBooking', () => {
       moreLater: true,
     })
     expect(parseBooking(loadOmioFixture('get-search-extended')).trainWindow?.end).toBe('11:54')
+  })
+
+  it('raises a schema error when the train window is not a pair of HH:MM times', () => {
+    const body = loadOmioFixture('get-search-done')
+    body.data.GetSearchWithoutQuotes.booking.extensionOptions[0].currentIntervals.outbound[0].end =
+      '2027-01-30T08:22:00'
+    expect(() => parseBooking(body)).toThrow(OmioSchemaError)
+    expect(() => parseBooking(body)).toThrow(/outbound\[0\]\.end/)
   })
 
   it('sums railcard discounts', () => {

@@ -58,6 +58,7 @@ export interface OmioJourney {
 }
 
 export interface OmioTrainWindow {
+  /** First and last departure time the returned trains cover, as HH:MM. */
   start: string;
   end: string;
   moreLater: boolean;
@@ -82,6 +83,7 @@ export interface OmioSearchStart {
 type Json = Record<string, unknown>;
 
 const TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/;
+const CLOCK_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 const STATUS_BY_WIRE_VALUE: Readonly<Record<string, OmioSearchStatus>> = {
   SEARCH_STATUS_RUNNING: 'running',
   SEARCH_STATUS_DONE: 'done',
@@ -119,37 +121,89 @@ function asNumber(value: unknown, path: string): number {
   return value;
 }
 
+/** A wall-clock time as HH:MM, the form train windows use. */
+function asClock(value: unknown, path: string): string {
+  const clock = asString(value, path);
+  if (!CLOCK_PATTERN.test(clock)) {
+    throw new OmioSchemaError(`${path} "${clock}" is not an HH:MM time`);
+  }
+  return clock;
+}
+
 function asOptionalList(value: unknown, path: string): unknown[] {
   return value === null || value === undefined ? [] : asArray(value, path);
 }
 
-// The wording GraphQL servers use when a query no longer fits their schema.
+// Error codes the live endpoint attaches (`extensions.code`) when our query no
+// longer fits what the server accepts: an unknown field, an unparseable query,
+// or a server that has moved to accepting only its own stored queries.
+const SCHEMA_ERROR_CODES: ReadonlySet<string> = new Set([
+  'GRAPHQL_VALIDATION_FAILED',
+  'GRAPHQL_PARSE_FAILED',
+  'PERSISTED_QUERY_NOT_FOUND',
+  'PERSISTED_QUERY_NOT_SUPPORTED',
+]);
+// The server uses this code both for variables that no longer fit the input
+// type (a schema change) and for values it rejects. Only the first kind names
+// the variable.
+const BAD_INPUT_CODE = 'BAD_USER_INPUT';
+const VARIABLE_MISMATCH_PATTERN = /^Variable "\$/;
+// Fallback for a reply with no error code: the wording GraphQL servers use
+// when a query no longer fits their schema.
 const GRAPHQL_VALIDATION_PATTERN =
   /Cannot query field|Unknown (argument|type|field|fragment)|is not defined by type|of required type|Expected (value of )?type|got invalid value/i;
+const MAX_ERROR_MESSAGE_LENGTH = 200;
 
-/** True when an error message says our query does not fit the schema any more. */
-export function isGraphqlValidationMessage(message: string): boolean {
-  return GRAPHQL_VALIDATION_PATTERN.test(message);
+export interface GraphqlFailure {
+  message: string;
+  /** True when the error says our query or variables no longer fit the schema. */
+  schemaChange: boolean;
+}
+
+function describeGraphqlError(raw: unknown): GraphqlFailure {
+  const error = raw !== null && typeof raw === 'object' ? (raw as Json) : {};
+  const message = (typeof error['message'] === 'string' ? error['message'] : JSON.stringify(raw)).slice(
+    0,
+    MAX_ERROR_MESSAGE_LENGTH,
+  );
+  const extensions = error['extensions'];
+  const code =
+    extensions !== null && typeof extensions === 'object' ? (extensions as Json)['code'] : undefined;
+
+  if (typeof code !== 'string') {
+    return { message, schemaChange: GRAPHQL_VALIDATION_PATTERN.test(message) };
+  }
+  const schemaChange =
+    SCHEMA_ERROR_CODES.has(code) || (code === BAD_INPUT_CODE && VARIABLE_MISMATCH_PATTERN.test(message));
+  return { message, schemaChange };
+}
+
+/**
+ * Reads the `errors` list of a GraphQL reply. Returns null when there is none.
+ * A schema error anywhere in the list wins, because that is the one that
+ * needs the code to be updated; otherwise the first error is reported.
+ */
+export function readGraphqlFailure(body: unknown): GraphqlFailure | null {
+  if (body === null || typeof body !== 'object') return null;
+  const errors = (body as Json)['errors'];
+  if (!Array.isArray(errors) || errors.length === 0) return null;
+  const failures = errors.map(describeGraphqlError);
+  return failures.find((failure) => failure.schemaChange) ?? failures[0] ?? null;
 }
 
 /**
  * Unwraps `{ data: { <operation>: ... } }`, surfacing GraphQL errors first.
- * Only validation errors count as a schema change; anything else the server
- * reports (a rejected search, an internal error) is passed on as it is.
+ * Only errors about the query itself count as a schema change; anything else
+ * the server reports (a rejected search, an internal error) is passed on as it is.
  */
 export function unwrapOperation(body: unknown, operation: string): Json {
   const root = asObject(body, 'response');
-  if (Array.isArray(root['errors']) && root['errors'].length > 0) {
-    const first = root['errors'][0];
-    const message = (
-      first !== null && typeof first === 'object' && typeof (first as Json)['message'] === 'string'
-        ? ((first as Json)['message'] as string)
-        : JSON.stringify(first)
-    ).slice(0, 200);
-    if (isGraphqlValidationMessage(message)) {
-      throw new OmioSchemaError(`GraphQL validation error from ${operation}: ${message}`);
+  const failure = readGraphqlFailure(root);
+  if (failure) {
+    if (failure.schemaChange) {
+      throw new OmioSchemaError(`GraphQL validation error from ${operation}: ${failure.message}`);
     }
-    throw new Error(`Uber Travel returned an error from ${operation}: ${message}`);
+    throw new Error(`Uber Travel returned an error from ${operation}: ${failure.message}`);
   }
   const data = asObject(root['data'], 'data');
   return asObject(data[operation], `data.${operation}`);
@@ -297,8 +351,8 @@ function parseTrainWindow(value: unknown, path: string): OmioTrainWindow | null 
     const intervalPath = `${path}[${index}].currentIntervals.outbound[0]`;
     const parsed = asObject(interval, intervalPath);
     return {
-      start: asString(parsed['start'], `${intervalPath}.start`),
-      end: asString(parsed['end'], `${intervalPath}.end`),
+      start: asClock(parsed['start'], `${intervalPath}.start`),
+      end: asClock(parsed['end'], `${intervalPath}.end`),
       moreLater: option['outboundLater'] === true,
     };
   }

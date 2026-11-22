@@ -13,10 +13,10 @@ import {
 } from './omio-queries.js';
 import {
   OmioSchemaError,
-  isGraphqlValidationMessage,
   parseBooking,
   parseLocations,
   parseSearchStart,
+  readGraphqlFailure,
   type OmioBooking,
   type OmioJourney,
   type OmioLocation,
@@ -31,13 +31,20 @@ const SITE_ORIGIN = 'https://travel.uber.com';
 const CSRF_PLACEHOLDER = 'x';
 
 const REQUEST_TIMEOUT_MS = 10_000;
+const MAX_ERROR_DETAIL_LENGTH = 200;
 const POLL_INTERVAL_MS = 1_000;
 const POLL_CAP_MS = 20_000;
 const TOTAL_BUDGET_MS = 35_000;
-// Each extension adds roughly two more hours of trains to the first window.
-const MAX_EXTENSIONS = 2;
-// After an extension, this many finished-but-unchanged replies are treated as stale.
+// Each extension adds one to two more hours of trains to the first window. How
+// many are asked for depends on `hours`; this is the ceiling for one search.
+const MAX_EXTENSIONS = 10;
+// After an extension, this many finished-but-unchanged replies are treated as
+// stale. Defensive: in live use the reply after an extension was either still
+// running or already showed the longer window, never the old one.
 const STALE_SNAPSHOT_POLLS = 2;
+// Location names offered in an error when a station code does not resolve.
+const MAX_OFFERED_LOCATIONS = 5;
+const MAX_OFFERED_NAME_LENGTH = 60;
 
 const LOCATION_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const SEARCH_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -46,6 +53,10 @@ const MAX_CACHE_ENTRIES = 50;
 const DEFAULT_TIME = '06:00';
 const DEFAULT_AGE = 30;
 const MAX_AGE = 120;
+const DEFAULT_HOURS = 4;
+const MAX_HOURS = 12;
+const MINUTES_PER_HOUR = 60;
+const MINUTES_PER_DAY = 24 * MINUTES_PER_HOUR;
 const RAILCARD_PROVIDER = 'assertis';
 const EXPECTED_CURRENCY = 'CURRENCY_GBP';
 
@@ -93,6 +104,8 @@ export interface OmioFareQuery {
   modes?: string[];
   railcards?: string[];
   age?: number;
+  /** How many hours of trains to return from `time`. */
+  hours?: number;
 }
 
 export interface NormalizedFareQuery {
@@ -101,6 +114,7 @@ export interface NormalizedFareQuery {
   modes: OmioSearchMode[];
   railcard: string | null;
   age: number;
+  hours: number;
 }
 
 export interface OmioFareResult extends NormalizedFareQuery {
@@ -128,6 +142,15 @@ interface CacheEntry<T> {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Parses JSON, giving undefined (which JSON itself never yields) for anything else. */
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
+  }
 }
 
 function normalizeDate(input: string): string {
@@ -189,6 +212,20 @@ function normalizeAge(input: number | undefined): number {
   return input;
 }
 
+function normalizeHours(input: number | undefined): number {
+  if (input === undefined) return DEFAULT_HOURS;
+  if (!Number.isInteger(input) || input < 1 || input > MAX_HOURS) {
+    throw new Error(`Invalid hours "${input}": expected a whole number from 1 to ${MAX_HOURS}`);
+  }
+  return input;
+}
+
+/** Minutes since midnight for an HH:MM time. */
+function clockMinutes(clock: string): number {
+  const [hour, minute] = clock.split(':').map(Number) as [number, number];
+  return hour * MINUTES_PER_HOUR + minute;
+}
+
 export function normalizeFareQuery(query: OmioFareQuery): NormalizedFareQuery {
   for (const field of ['from', 'to'] as const) {
     if (typeof query[field] !== 'string' || query[field].trim() === '') {
@@ -201,6 +238,7 @@ export function normalizeFareQuery(query: OmioFareQuery): NormalizedFareQuery {
     modes: normalizeModes(query.modes),
     railcard: normalizeRailcard(query.railcards),
     age: normalizeAge(query.age),
+    hours: normalizeHours(query.hours),
   };
 }
 
@@ -234,8 +272,27 @@ function nameWords(name: string): string[] {
   return name
     .toLowerCase()
     .replace(/['’.]/g, '')
+    .replace(/&/g, ' and ')
     .split(/[^a-z0-9]+/)
     .filter((word) => word !== '');
+}
+
+/**
+ * The texts to send to the location search for a name, in the order to try
+ * them. Two quirks of the live search, both seen in use:
+ * - A query containing "&" or "and" finds nothing ("Harrow & Wealdstone" gives
+ *   no results, "Harrow" lists it), so only the part before the joining word
+ *   is sent.
+ * - Apostrophes are kept in some station names and dropped in others
+ *   ("Shepherd's Bush" but "Christs Hospital"), and the query has to agree, so
+ *   a name with one is tried as written and then without it.
+ * Results are still matched against the full name.
+ */
+export function locationSearchTerms(name: string): string[] {
+  const firstPart = (name.split(/\s+(?:&|and)\s+/i)[0] ?? name).trim();
+  const asWritten = firstPart === '' ? name : firstPart;
+  const withoutApostrophes = asWritten.replace(/['’]/g, '');
+  return withoutApostrophes === asWritten ? [asWritten] : [asWritten, withoutApostrophes];
 }
 
 function comparableName(name: string): string {
@@ -359,17 +416,37 @@ export class OmioClient {
     const name = stationName ?? trimmed;
     // Three letters that are not a code we know may be a typo or a code missing
     // from the station table, so only an exact place name is accepted for them.
-    const match: LocationMatch = stationName ? 'crs' : looksLikeCrs ? 'exact' : 'free';
+    const terms = locationSearchTerms(name);
+    // A shortened term lists places that merely share a first word, so the
+    // first suggestion is no longer a fair reading of what was asked for.
+    const shortened = comparableName(terms[0] ?? name) !== comparableName(name);
+    const match: LocationMatch = stationName ? 'crs' : looksLikeCrs || shortened ? 'exact' : 'free';
 
-    const picked = pickLocation(await this.lookupLocations(name), name, match);
+    let locations: OmioLocation[] = [];
+    let picked: OmioLocation | null = null;
+    for (const [index, term] of terms.entries()) {
+      locations = await this.lookupLocations(term);
+      // The first suggestion is only a fallback once every spelling has been tried.
+      const isLastTerm = index === terms.length - 1;
+      picked = pickLocation(locations, name, match === 'free' && !isLastTerm ? 'exact' : match);
+      if (picked) break;
+    }
     if (!picked) {
       const detail = stationName
         ? ` (${stationName}): no British station with that name came back.`
         : looksLikeCrs
           ? '. It is not a station code this server knows and no place has exactly that name, so pass the full station name.'
           : '.';
+      // Naming what did come back saves the caller a second lookup.
+      const offered = locations
+        .filter(
+          (location) => location.type === 'station' && (match !== 'crs' || location.countryCode === 'GB'),
+        )
+        .slice(0, MAX_OFFERED_LOCATIONS)
+        .map((location) => location.name.slice(0, MAX_OFFERED_NAME_LENGTH));
+      const offer = offered.length > 0 ? ` Uber Travel offers: ${offered.join(', ')}.` : '';
       throw new Error(
-        `No Uber Travel location found for "${trimmed}"${detail} Use omio_locations to see what it knows, then pass that name.`,
+        `No Uber Travel location found for "${trimmed}"${detail}${offer} Use omio_locations to see what it knows, then pass that name.`,
       );
     }
     return picked;
@@ -425,23 +502,44 @@ export class OmioClient {
     }
 
     const extended = query.modes.includes('train')
-      ? await this.extendLater(searchId, first, deadline)
+      ? await this.extendLater(searchId, first, deadline, query)
       : { booking: first, notes: [] };
     return this.buildResult(origin, destination, query, extended.booking, extended.notes);
   }
 
-  /** Asks for later train windows, a bounded number of times and within the time budget. */
+  /**
+   * Asks for later train windows until the trains cover `query.hours` from
+   * `query.time` or the day ends, a bounded number of times and within the
+   * time budget.
+   */
   private async extendLater(
     searchId: string,
     initial: OmioBooking,
     deadline: number,
+    query: NormalizedFareQuery,
   ): Promise<{ booking: OmioBooking; notes: string[] }> {
+    // Hours that run past midnight mean "to the end of the day": windows are
+    // plain HH:MM times, so the last one a window can end on is 23:59.
+    const coverUntil = Math.min(
+      clockMinutes(query.time) + query.hours * MINUTES_PER_HOUR,
+      MINUTES_PER_DAY - 1,
+    );
     let booking = initial;
-    for (let extension = 0; extension < MAX_EXTENSIONS; extension++) {
+    for (let extension = 0; ; extension++) {
       const window = booking.trainWindow;
       // An end before the start means the window already runs past midnight.
       if (!window || !window.moreLater || window.end < window.start) break;
-      if (this.now() + POLL_INTERVAL_MS > deadline) {
+      if (clockMinutes(window.end) >= coverUntil) break;
+      if (extension >= MAX_EXTENSIONS) {
+        return {
+          booking,
+          notes: [
+            `Stopped after ${MAX_EXTENSIONS} requests for later trains, before covering the hours asked for. Search again with a later time for the rest.`,
+          ],
+        };
+      }
+      // An extension is one request and at least one poll, so leave room for both.
+      if (this.now() + REQUEST_TIMEOUT_MS + POLL_INTERVAL_MS > deadline) {
         return { booking, notes: ['Stopped asking for later trains: the time budget for one search ran out.'] };
       }
 
@@ -563,20 +661,21 @@ export class OmioClient {
     } catch (error) {
       throw new Error(`Uber Travel reply for ${operationName} could not be read: ${errorMessage(error)}`);
     }
+    const body = parseJson(text);
     if (!response.ok) {
-      // GraphQL servers answer a query that no longer fits the schema with HTTP 400.
-      if (isGraphqlValidationMessage(text)) {
-        throw new OmioSchemaError(`${operationName} was rejected: ${text.slice(0, 200)}`);
+      // The server answers a query that no longer fits the schema with HTTP 400
+      // and a GraphQL error list, and its own failures with HTTP 500 and the same.
+      const failure = readGraphqlFailure(body);
+      if (failure?.schemaChange) {
+        throw new OmioSchemaError(`${operationName} was rejected: ${failure.message}`);
       }
-      throw new Error(
-        `Uber Travel request failed (${response.status}) for ${operationName}: ${text.slice(0, 200)}`,
-      );
+      const detail = (failure?.message ?? text).slice(0, MAX_ERROR_DETAIL_LENGTH);
+      throw new Error(`Uber Travel request failed (${response.status}) for ${operationName}: ${detail}`);
     }
-    try {
-      return JSON.parse(text) as unknown;
-    } catch {
+    if (body === undefined) {
       throw new OmioSchemaError(`${operationName} reply was not JSON`);
     }
+    return body;
   }
 
   private readCache<T>(cache: Map<string, CacheEntry<T>>, key: string): T | undefined {

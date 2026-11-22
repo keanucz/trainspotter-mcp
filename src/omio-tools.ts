@@ -11,7 +11,7 @@ export const omioTools: Tool[] = [
   {
     name: SEARCH_TOOL,
     description:
-      'Search train and coach prices for one date via Uber Travel (Omio-backed). Unlike search_fares, which lists the fare table, this returns one row per departure with the price currently shown for that train or coach, including advance fares, split tickets and National Express coaches. No API key and no monthly quota, so use it as the second opinion next to search_fares. Trains are returned for roughly five hours from `time`; search again with a later time for more. Coaches are returned for the rest of the day. Caveats: this is an undocumented API that may break without notice, and prices are list prices at search time, not a booking or a held fare.',
+      'Search train and coach prices for one date via Uber Travel (Omio-backed). Unlike search_fares, which lists the fare table, this returns one row per departure with the price currently shown for that train or coach, including advance fares, split tickets and National Express coaches. No API key and no monthly quota, so use it as the second opinion next to search_fares. Trains are returned for at least `hours` hours from `time` (default 4, usually a little more); raise `hours` or search again with a later time for more. Coaches are returned for the rest of the day. Caveats: this is an undocumented API that may break without notice, and prices are list prices at search time, not a booking or a held fare.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -44,6 +44,13 @@ export const omioTools: Tool[] = [
         age: {
           type: 'number',
           description: 'Traveller age in years (default 30)',
+        },
+        hours: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 12,
+          description:
+            'How many hours of trains to return from `time`: a whole number from 1 to 12 (default 4). More hours make the search slower, about 2 seconds per extra 1-2 hours',
         },
         direct_only: {
           type: 'boolean',
@@ -121,6 +128,7 @@ function readFareQuery(args: Record<string, unknown>): OmioFareQuery {
     modes: optionalStringList(args, 'modes'),
     railcards: optionalStringList(args, 'railcards'),
     age: optionalNumber(args, 'age'),
+    hours: optionalNumber(args, 'hours'),
   };
 }
 

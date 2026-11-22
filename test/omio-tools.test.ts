@@ -64,6 +64,21 @@ describe('formatOmioFares', () => {
     )
   })
 
+  it('does not advertise a split ticket that saves nothing', async () => {
+    const body = loadOmioFixture('get-search-done')
+    body.data.GetSearchWithoutQuotes.booking.journeys[3].departure.split = { savingCents: 0 }
+    const result = await fixtureClient({ GetSearchWithoutQuotes: body }).searchFares({
+      from: 'LPY',
+      to: 'EUS',
+      date: '2027-01-30',
+      time: '06:30',
+    })
+    const row = formatOmioFares(result)
+      .split('\n')
+      .find((line) => line.startsWith('06:54'))
+    expect(row).toBe('06:54→09:04 | Liverpool South Parkway → London Euston | direct | Avanti West Coast | train | £26.00')
+  })
+
   it('marks arrivals on a later day', async () => {
     const text = formatOmioFares(await searchFixture())
     expect(text).toContain('19:30→06:30+1 | Liverpool, One Bus Station, Canning Place → London, Victoria Coach Station')
@@ -87,6 +102,23 @@ describe('formatOmioFares', () => {
   it('reports the train window and how to see later trains', async () => {
     const text = formatOmioFares(await searchFixture())
     expect(text).toMatch(/Trains cover departures 06:00-08:22\..*later time/)
+  })
+
+  it('points at the hours option for later trains', async () => {
+    const text = formatOmioFares(await searchFixture())
+    expect(text).toMatch(/later time or a larger hours value/)
+  })
+
+  it('says when no trains came back at all instead of blaming the booking horizon alone', async () => {
+    const body = loadOmioFixture('get-search-done')
+    body.data.GetSearchWithoutQuotes.booking.extensionOptions = []
+    const result = await fixtureClient({ GetSearchWithoutQuotes: body }).searchFares({
+      from: 'LPY',
+      to: 'EUS',
+      date: '2027-01-30',
+      time: '20:30',
+    })
+    expect(formatOmioFares(result)).toMatch(/No trains were returned from 20:30: there may be none left that day/)
   })
 
   it('names the cheapest journey', async () => {
@@ -177,6 +209,21 @@ describe('omio tools', () => {
     expect(textOf(result)).not.toContain('07:03')
   })
 
+  it('offers an hours argument and passes it to the search', async () => {
+    const properties = omioTools[0]?.inputSchema.properties as Record<string, unknown>
+    expect(properties).toHaveProperty('hours')
+
+    const calls: string[] = []
+    const client = fixtureClient()
+    const search = client.searchFares.bind(client)
+    client.searchFares = async (query) => {
+      calls.push(JSON.stringify(query.hours))
+      return search(query)
+    }
+    await handleOmioTool('search_omio_fares', { from: 'LPY', to: 'EUS', date: '2027-01-30', hours: 2 }, client)
+    expect(calls).toEqual(['2'])
+  })
+
   it('runs a location search', async () => {
     const result = await handleOmioTool('omio_locations', { query: 'Liverpool' }, fixtureClient())
     expect(textOf(result)).toContain('Liverpool Lime Street | station')
@@ -196,6 +243,8 @@ describe('omio tools', () => {
       { from: 'LPY', to: 'EUS', date: '2027-01-30', railcards: [1] },
       { from: 'LPY', to: 'EUS', date: '2027-01-30', age: '30' },
       { from: 'LPY', to: 'EUS', date: '2027-01-30', direct_only: 'yes' },
+      { from: 'LPY', to: 'EUS', date: '2027-01-30', hours: '6' },
+      { from: 'LPY', to: 'EUS', date: '2027-01-30', hours: 24 },
     ]
     for (const args of cases) {
       const result = await handleOmioTool('search_omio_fares', args, client)

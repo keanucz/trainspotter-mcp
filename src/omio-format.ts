@@ -56,7 +56,8 @@ export function formatJourneyRow(journey: OmioJourney, searchDate: string = jour
     describeMode(journey),
     describePrice(journey),
   ];
-  if (journey.splitSavingPence !== null) {
+  // The API marks some ordinary fares as a split that saves nothing; that is not worth a column.
+  if (journey.splitSavingPence !== null && journey.splitSavingPence > 0) {
     columns.push(`split ticket, saves ${formatPence(journey.splitSavingPence)}`);
   }
   if (journey.splitJourneys.length > 0) {
@@ -96,10 +97,10 @@ function cheapestLine(journeys: readonly OmioJourney[]): string | null {
 function coverageLine(result: OmioFareResult): string | null {
   if (!result.modes.includes('train')) return null;
   if (!result.trainWindow) {
-    return 'No train window was returned: trains may not be on sale for this date yet.';
+    return `No trains were returned from ${result.time}: there may be none left that day, or trains may not be on sale for this date yet.`;
   }
   const { start, end, moreLater } = result.trainWindow;
-  const more = moreLater ? ' Search again with a later time for later trains.' : '';
+  const more = moreLater ? ' For later trains, search again with a later time or a larger hours value.' : '';
   const coaches = result.modes.includes('coach') ? ' Coaches cover the rest of the day.' : '';
   return `Trains cover departures ${start}-${end}.${more}${coaches}`;
 }
