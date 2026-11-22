@@ -1,7 +1,8 @@
 // Text output for the Uber Travel (Omio-backed) tools.
 
 import type { OmioJourney, OmioLocation } from './omio-parse.js';
-import { OMIO_RAILCARDS, comparableName, type OmioFareResult } from './omio.js';
+import { comparableName } from './omio-locations.js';
+import { OMIO_RAILCARDS, type OmioFareResult } from './omio.js';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
